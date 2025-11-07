@@ -1,13 +1,14 @@
 import numpy as np
-from pyscf import gto, dft
+from pyscf import gto, dft, scf
 import matplotlib.pyplot as plt
 
 from TDRKS import TDRKSSimulation
 from TDRHF import TDRHFSimulation
+from TDUHF import TDUHFSimulation
 # --- Define Propagation Methods ---
 # These functions will be "monkey-patched" onto the TDRKSSimulation class.
 
-def run_ehrenfest_midpoint_decoupled(self):
+def run_ehrenfest_midpoint_decoupled(self, alpha =1 ):
     """
     Main simulation loop for Ehrenfest dynamics with decoupled time steps,
     using the "nuclear-position-coupled midpoint Fock integrator"
@@ -73,7 +74,8 @@ def run_ehrenfest_midpoint_decoupled(self):
 
             # --- Step c: Inner Loop (Electronic Propagation) ---
             # Propagate electrons from t to t + dt_N under the *fixed midpoint geometry*
-            for elec_step in range(elec_steps_per_nuc_step):
+            for elec_step in range(0,1):
+            #for elec_step in range(elec_steps_per_nuc_step ):
                 # Get Fock matrix at current electronic time t
                 # H_core and overlap are fixed at H(R_mid)
                 dm_current_elec = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
@@ -81,8 +83,8 @@ def run_ehrenfest_midpoint_decoupled(self):
                 F_current_elec = self.get_fock_matrix(dm_current_elec, E_t_current_elec)
                 
                 # Propagate electronics by one small 'dt_e' step
-                self.propagate_electrons(F_current_elec, E_t_current_elec, dt=dt_e) 
-                self.mo_coeff = self.orthogonalize_mo_coeff(self.mo_coeff)
+                self.propagate_electrons(F_current_elec, E_t_current_elec, dt=dt_e * alpha) 
+                # self.mo_coeff = self.orthogonalize_mo_coeff(self.mo_coeff)
                 
                 # Advance electronic time
                 self.t += dt_e
@@ -134,7 +136,7 @@ def run_ehrenfest_midpoint_decoupled(self):
         print(f"Energy and dipole data saved to {self.energy_filename}")
 
 
-def run_ehrenfest_gear_decoupled(self):
+def run_ehrenfest_gear_decoupled(self, alpha =1 ):
     """
     Runs Ehrenfest dynamics using the high-order, multi-step
     predictor-corrector nuclear propagator from the user-provided image.
@@ -212,7 +214,7 @@ def run_ehrenfest_gear_decoupled(self):
             self.update_mol(positions=R_mid) 
             
             # Propagate n(t) to n(t+dt_N) at fixed R_mid
-            for elec_step in range(elec_steps_per_nuc_step):
+            for elec_step in range(elec_steps_per_nuc_step * alpha ):
                 dm_current_elec = self.make_rdm1(self.mo_coeff, self.mo_occ)
                 E_t_current_elec = self.electric_field(self.t)
                 F_current_elec = self.get_fock_matrix(dm_current_elec, E_t_current_elec)
@@ -293,36 +295,39 @@ if __name__ == "__main__":
     # This is done to satisfy the "keep files separate" request.
     TDRKSSimulation.run_ehrenfest_gear_decoupled = run_ehrenfest_gear_decoupled
     TDRKSSimulation.run_ehrenfest_midpoint_decoupled = run_ehrenfest_midpoint_decoupled
-    
+    TDRHFSimulation.run_ehrenfest_gear_decoupled = run_ehrenfest_gear_decoupled
+    TDRHFSimulation.run_ehrenfest_midpoint_decoupled = run_ehrenfest_midpoint_decoupled
+    TDUHFSimulation.run_ehrenfest_gear_decoupled = run_ehrenfest_gear_decoupled
+    TDUHFSimulation.run_ehrenfest_midpoint_decoupled = run_ehrenfest_midpoint_decoupled
     # 1. Setup Molecule
     mol = gto.M(
         atom='''
-        H 0.000000 0.000000 0.000000
-        H 0.000000 0.000000 1.000000
+        F 0.000000 0.000000 0.000000
+        F 0.000000 0.000000 0.800000
         ''',
         basis='6-31g'
     )
     
     # 2. Run ground-state SCF (using RKS)
-    mf = dft.RKS(mol, xc='lda')
+    mf = scf.UHF(mol)
     mf.kernel()
 
     # 3. Setup Simulation
-    simulation_rks = TDRKSSimulation(
+    simulation_rks = TDUHFSimulation(
         mf, 
-        dt=0.1,                # Electronic time step (dt_e)
-        nuclei_dt=0.5,         # Nuclear time step (dt_N)
-        steps=1000,            # Number of *nuclear* steps
+        dt=1.0,                # Electronic time step (dt_e)
+        nuclei_dt=1.0,         # Nuclear time step (dt_N)
+        steps=170,            # Number of *nuclear* steps
         field_type='none',  
         ehrenfest=True,       
-        convergence_threshold=1e-4, 
+        convergence_threshold=1e-5, 
         output_interval=10,    # Write XYZ every 10 *nuclear* steps
         energy_filename="decoupled_energies_midpoint_dt_0d1_0d5.npz",
         output_filename="decoupled_trajectory.xyz"
     )
     
     # 4. Run the simulation using one of the patched methods
-    simulation_rks.run_ehrenfest_midpoint_decoupled()
+    simulation_rks.run_ehrenfest_midpoint_decoupled(alpha =1.0)
     # simulation_rks.run_ehrenfest_gear_decoupled() # Uncomment to run the other method
 
     # 5. Plot results
@@ -332,7 +337,7 @@ if __name__ == "__main__":
     plt.plot(simulation_rks.times, np.array(simulation_rks.total_energies) - simulation_rks.total_energies[0], label='Total Energy Change')
     
     # Optional: Plot individual components
-    # plt.plot(simulation_rks.times, np.array(simulation_rks.potential_energies) - simulation_rks.potential_energies[0], label='Potential Energy Change')
+    #plt.plot(simulation_rks.times, np.array(simulation_rks.potential_energies) - simulation_rks.potential_energies[0], label='Potential Energy Change')
     # plt.plot(simulation_rks.times, simulation_rks.kinetic_energies, label='Kinetic Energy')
     
     plt.xlabel("Time (a.u.)")
