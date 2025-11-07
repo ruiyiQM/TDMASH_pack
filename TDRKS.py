@@ -66,7 +66,10 @@ def update_mol(self, positions=None):
         self.mf = dft.RKS(new_mol, xc=self.xc)  # Reinitialize with the new molecule
     else:
         self.mf = dft.RKS(new_mol, xc=self.xc).density_fit()  # Reinitialize with the new molecule
+
+    self.mo_coeff = self.overlap_half @ self.mo_coeff  # Transform MO coeffs to new basis
     self.update_overlap() # Update overlap matrix S and its inverses S^-1, S^-1/2
+    self.mo_coeff = self.overlap_half_inv @ self.mo_coeff # Lowdin orthogonalization to new basis
     # MODIFICATION: Recalculate and cache the core Hamiltonian for the new geometry
     self.h_core = self.mf.get_hcore(self.mol)
 
@@ -101,13 +104,13 @@ if __name__ == "__main__":
         H 0.000000 0.000000 0.000000
         F 0.000000 0.000000 0.78000
         ''',
-        basis='sto-3g',
+        basis='6-31g',
         
         
     )
 
 
-    mf = dft.RKS(mol, xc='pbe0').density_fit()
+    mf = dft.RKS(mol, xc='lda')
     mf.convergence = 1e-16
     
     mf.kernel()
@@ -121,7 +124,7 @@ if __name__ == "__main__":
 
 
 
-    simulation_uhf = TDRKSSimulation(mf, dt=1, nuclei_dt=1,  steps=1000, field_type='none',  ehrenfest=True,  output_interval = -1,  convergence_threshold=1e-5)
+    simulation_uhf = TDRKSSimulation(mf, dt=1, nuclei_dt=1,  steps=1000, field_type='none',  ehrenfest=True,  output_interval = -1,  convergence_threshold=1e-4)
 
     simulation_uhf.run()
 
@@ -129,8 +132,8 @@ if __name__ == "__main__":
     #plt.plot( simulation_uhf.dipoles[:,2], label='Dipole X')
 
 
-    plt.plot(simulation_uhf.potential_energies - simulation_uhf.potential_energies[0], label='Potential Energy')
-    plt.plot(simulation_uhf.kinetic_energies-simulation_uhf.kinetic_energies[0], label='Kinetic Energy')
+    #plt.plot(simulation_uhf.potential_energies - simulation_uhf.potential_energies[0], label='Potential Energy')
+    #plt.plot(simulation_uhf.kinetic_energies-simulation_uhf.kinetic_energies[0], label='Kinetic Energy')
     plt.plot(simulation_uhf.total_energies-simulation_uhf.total_energies[0], label='Total Energy')
     plt.legend()
 
