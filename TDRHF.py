@@ -56,9 +56,9 @@ def apply_scf(self):
             rhf= rhf.newton()
             rhf.kernel()
 
-        #self.mf = rhf
-        #self.initialize_molecular_orbitals(n_virtual=0)
-        return self.energy_tot()
+        self.mf = rhf
+        self.initialize_molecular_orbitals(n_virtual=0)
+        return rhf.kernel()
 def apply_scf_v2(self):
 
         """
@@ -171,10 +171,29 @@ class TDRHFSimulation:
     def electric_field(self, t):
         """Calculates the external electric field at time t."""
         if self.field_type == 'gaussian':
-            return self.E0 * np.exp(-((t - self.t0) ** 2) / (2 * self.tau ** 2)) * np.cos(self.omega * t)
+            # This implements Eq. (C1) from JCTC 2018, 14, 5645-5652
+            # E(t) = E_max * exp(-(t-t0)^2 / (2*sigma^2)) * sin(omega*(t-t0))
+            # Note: Our self.tau is sigma (the Gaussian width)
+            # The paper's omega is self.omega, t0 is self.t0, E_max is self.E0
+            envelope = np.exp(-((t - self.t0) ** 2) / (2 * self.tau ** 2))
+            carrier = np.sin(self.omega * (t - self.t0))
+            return self.E0 * envelope * carrier
+        elif self.field_type == 'sine':
+            # Simple continuous sine wave
+            return self.E0 * np.sin(self.omega * t)
+        
         elif self.field_type == 'delta_kick':
-            return self.E0 if abs(t - self.t0) < self.dt / 2.0 else 0.0
-        return 0.0
+            # This is a numerical approximation of a delta kick
+            # E(t) = E0 for one time step 'dt' centered at t0
+            # Note: We must ensure t0 is set correctly, e.g., t0 = dt / 2.0
+            if abs(t - self.t0) < self.dt / 2.0:
+                # The "strength" of the kick is P = E0 * dt.
+                # Here we return the field strength E0.
+                return self.E0 
+            else:
+                return 0.0
+        
+        return 0.0 # 'none' or other types
 
     def propagate_electrons(self, F_current, E_t, dt = None):
         """Propagates electronic wavefunction using the specified method."""
@@ -192,12 +211,15 @@ class TDRHFSimulation:
 
         # Predictor
         local_F_scaled = F_current / self.mu
+        #local_F_scaled -= self.overlap @ self.make_rdm1(self.mo_coeff, self.mo_occ).real /2. @ local_F_scaled
         #if self.ehrenfest:
         #    local_F_scaled = self.apply_elec_nuc_coupling(local_F_scaled)
         F_t_scaled = local_F_scaled.copy()
+        #F_t_scaled -= self.overlap @ self.make_rdm1(self.mo_coeff, self.mo_occ) /2. @ local_F_scaled
         A_pred = self.overlap + 0.5j * dt * F_t_scaled
         B_pred = self.overlap - 0.5j * dt * F_t_scaled
         mo_coeff_predict_iter = np.linalg.solve(A_pred, B_pred @ self.mo_coeff)
+
 
         # Corrector
         for iter_count in range(self.max_iterations):
@@ -206,8 +228,10 @@ class TDRHFSimulation:
             F_predict_raw = self.get_fock_matrix(dm_predict, E_t_plus_dt)
             self.F = F_predict_raw.copy()
             F_predict_scaled = F_predict_raw / self.mu
+            #F_predict_scaled -= self.overlap @ dm_predict.real/2. @ F_predict_scaled
             #if self.ehrenfest:
-            #    F_predict_scaled = self.apply_elec_nuc_coupling(F_predict_scaled)
+            #   F_predict_scaled = self.apply_elec_nuc_coupling(F_predict_scaled)
+            
             F_average_scaled = 0.5 * local_F_scaled + 0.5 * F_predict_scaled
             A_corr = self.overlap + 0.5j * dt * F_average_scaled
             B_corr = self.overlap - 0.5j * dt * F_average_scaled
@@ -282,15 +306,20 @@ class TDRHFSimulation:
                         charge=self.mol.charge,
                         spin=self.mol.spin,
                         cart=self.mol.cart)
+        if self.mol.ecp is not None:
+            new_mol.ecp = self.mol.ecp
         new_mol.build()
         self.mol = new_mol
-        
+        #if (self.mo_coeff.shape[0] == 0):
+        self.mo_coeff = self.overlap_half @ self.mo_coeff
 
         if (self.with_df is False):
             self.mf = scf.RHF(self.mol)
         else:
             self.mf = scf.RHF(self.mol).density_fit()
         self.update_overlap()
+
+        self.mo_coeff = self.overlap_half_inv @ self.mo_coeff
 
         # MODIFICATION: Recalculate and cache the core Hamiltonian for the new geometry
         self.h_core = self.mf.get_hcore(self.mol)
@@ -331,7 +360,7 @@ class TDRHFSimulation:
                 E_t_current = self.electric_field(self.t)
                 F_current_for_prop = self.get_fock_matrix(dm_current, E_t_current)
                 self.propagate_electrons(F_current_for_prop, E_t_current)
-                self.mo_coeff = self.orthogonalize_mo_coeff(self.mo_coeff)
+                #self.mo_coeff = self.orthogonalize_mo_coeff(self.mo_coeff)
 
                 # Calculate forces and update velocities (Velocity Verlet second half)
                 if self.ehrenfest:
@@ -375,7 +404,7 @@ class TDRHFSimulation:
 
 
     # Unchanged utility methods from here...
-    def imaginary_time_propagation(self, F_current, E_t, dt= None):
+    def imaginary_time_propagation(self, F_current, dt= None):
         """
         Performs one step of predictor-corrector propagation for RHF.
         F_current is the Fock matrix at the beginning of the step.
@@ -474,6 +503,7 @@ class TDRHFSimulation:
     def energy_grad(self, F_rhf, dm0_rhf=None):
         if dm0_rhf is None:
             dm0_rhf = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
+        
         mf_grad = self.mf.nuc_grad_method()
         mol = self.mol
         hcore_deriv_generator = mf_grad.hcore_generator(mol)
@@ -518,13 +548,13 @@ class TDRHFSimulation:
 
         if (self.imaginary_time):
             dm_next_step = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
-            E_t_current = self.electric_field(self.t)
+            E_t_current = 0.0
             F_next_step = self.get_fock_matrix(dm_next_step, E_t_current)
             self.F = F_next_step
-            self.imaginary_time_propagation(F_next_step, E_t_current, dt= self.imaginary_time_dt)
+            self.imaginary_time_propagation(F_next_step, E_t_current)
 
         dm_next_step = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
-        F_next_step = self.get_fock_matrix(dm_next_step, self.electric_field(self.t + self.dt))
+        F_next_step = self.get_fock_matrix(dm_next_step)
         self.F = F_next_step
         self.dm_total = dm_next_step
         if (apply_scf):
@@ -555,6 +585,9 @@ class TDRHFSimulation:
     def update_overlap(self):
         """Updates overlap matrix and its inverses if geometry changes."""
         self.overlap = self.mol.intor('int1e_ovlp').astype(complex)
+        self.overlap_half_inv_previous = self.overlap_half_inv.copy()
+        self.overlap_half_previous = self.overlap_half.copy()
+
         self.overlap_half_inv, self.overlap_half, self.overlap_inv = lowdin(self.overlap)
 
     def calculate_forces(self):
@@ -562,7 +595,8 @@ class TDRHFSimulation:
         dm_for_force = self.make_rdm1(self.mo_coeff, self.mo_occ)
         self.F = self.get_fock_matrix(dm_for_force)
         self.force = -self.energy_grad(self.F, dm_for_force)
-
+        #mf_grad = self.mf.nuc_grad_method()
+        #self.force = -mf_grad.kernel(self.make_rdm1(self.mo_coeff, self.mo_occ).real)
     def update_dt(self,new_dt):
         """Updates the electronic time step."""
         self.dt = new_dt
@@ -581,25 +615,37 @@ class TDRHFSimulation:
 if __name__ == "__main__":
     mol = gto.M(
         atom='''
-        H 0.000000 0.000000 0.000000
-        H 0.000000 0.000000 0.78000
+        H 0.0 0.0  0.0 
+        F 0.0 0.0  1.0
         ''',
         basis='6-31g'
+        #basis='bfd-vtz',
+        #ecp = 'bfd-pp',
     )
-    mf = scf.RHF(mol).density_fit()
-    print (mf.with_df==True)
-    mf.kernel()
-
-    simulation_rhf = TDRHFSimulation(mf, dt=1, nuclei_dt=1,  steps=1000, field_type='none',  ehrenfest= True,  output_interval = -1, convergence_threshold=1e-4)
-    simulation_rhf.run()
     
-    plt.figure(figsize=(10, 6))
-    plt.plot(simulation_rhf.times, np.array(simulation_rhf.potential_energies) - simulation_rhf.potential_energies[0], label='Potential Energy')
+    # 2. 运行基态 SCF
+    mf = scf.RHF(mol)
+    mf.kernel()
+    #mf.mo_occ[4]=0
+    #mf.mo_occ[5]=2
+
+    simulation_rhf = TDRHFSimulation(mf, dt=1, nuclei_dt=1,  steps=200, field_type='none',  ehrenfest= True , E0= 0.1,  convergence_threshold=1e-7, output_interval = 10)
+    simulation_rhf.run()
+    #dipoles = np.array(simulation_rhf.dipoles)
+    #plt.plot(simulation_rhf.times, dipoles[:,2])
+    #plt.xlabel("Time (a.u.)")
+    #plt.ylabel("Dipole Moment (a.u.)")
+    #plt.title("Dipole Moment along z-axis in Ehrenfest Dynamics of H2")
+    #plt.grid(True)
+    #plt.show()
+    
+    #plt.figure(figsize=(10, 6))
+    #plt.plot(simulation_rhf.times, np.array(simulation_rhf.potential_energies) - simulation_rhf.potential_energies[0], label='Potential Energy')
     #plt.plot(simulation_rhf.times, simulation_rhf.kinetic_energies, label='Kinetic Energy')
-    #plt.plot(simulation_rhf.times, np.array(simulation_rhf.total_energies) - simulation_rhf.total_energies[0], label='Total Energy')
+    plt.plot(simulation_rhf.times, np.array(simulation_rhf.total_energies) - simulation_rhf.total_energies[0], label='Total Energy')
     plt.xlabel("Time (a.u.)")
     plt.ylabel("Energy Change (Hartree)")
     plt.title("Energy Conservation in Ehrenfest Dynamics of H2")
-    plt.legend()
-    plt.grid(True)
+    #plt.legend()
+    #plt.grid(True)
     plt.show()
