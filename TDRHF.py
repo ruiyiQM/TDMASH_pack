@@ -2,7 +2,8 @@ from pyscf import gto, scf
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
-
+from DIIS import DIIS
+from Anderson import AndersonAcceleration
 
 
 def lowdin(s):
@@ -24,6 +25,466 @@ def lowdin(s):
         np.dot(v[:, idx] * sqrt_e, v[:, idx].conj().T),
         np.dot(v[:, idx] * 1.0/e[idx], v[:, idx].conj().T),
     )
+
+def linear_interpolated_crank_nicolson_accelerated(self, F_current, E_t, dt=None, num_substeps=5):
+        """
+        Propagates from t to t+dt using Linear Interpolation of the Fock matrix 
+        over small substeps (LiCN).
+        
+        Accelerated by:
+        1. Time-Domain Extrapolation (Predictor)
+        2. Anderson Mixing on Fock Matrix (Corrector)
+        
+        Convergence Criteria: 
+        - Difference in MO coefficients between iterations (mo_diff).
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+        
+        # Constants
+        local_F_start = F_current * self.mu  # F(t)
+        sub_dt = dt / num_substeps
+        
+        # --- 1. PREDICTOR STEP (Time-Domain Extrapolation) ---
+        # Guess F(t+dt) based on velocity of F change.
+        #if hasattr(self, 'F_prev_step') and self.F_prev_step is not None:
+            # F_guess = F(t) + (F(t) - F(t-dt))
+        #    F_guess_next = 2.0 * local_F_start - self.F_prev_step
+        #else:
+        F_guess_next = local_F_start.copy()
+
+        # Initialize Anderson Accelerator
+        accelerator = AndersonAcceleration(history_size=6, regularization=1e-5)
+        
+        # Initialize previous iteration coefficients for convergence check
+        mo_coeff_iter_prev = self.mo_coeff.copy()
+
+        # --- Helper: Run the full substep chain ---
+        # Takes the TARGET Fock matrix (F_end_val) and propagates C(t) -> C(t+dt)
+        def propagate_substeps(F_end_val):
+            C_curr = self.mo_coeff.copy() # Start from C(t)
+            
+            for k in range(num_substeps):
+                # Calculate interpolation ratio for the MIDPOINT of the current substep
+                alpha = (k + 0.5) / num_substeps
+                
+                # Linearly interpolate Fock matrix
+                F_sub_avg = (1.0 - alpha) * local_F_start + alpha * F_end_val
+                
+                # Crank-Nicolson Step for this substep
+                rhs_op = self.overlap - 0.5j * sub_dt * F_sub_avg
+                lhs_op = self.overlap + 0.5j * sub_dt * F_sub_avg
+                
+                # Solve linear system
+                C_curr = np.linalg.solve(lhs_op, rhs_op @ C_curr)
+            
+            return C_curr
+
+        # --- 2. CORRECTOR LOOP (Self-Consistency) ---
+        for iter_count in range(self.max_iterations):
+            
+            # A. Propagate using current guess for F(t+dt)
+            mo_coeff_next = propagate_substeps(F_guess_next)
+            
+            # B. Convergence Check (MO Coefficients)
+            # Compare current MOs with MOs from the previous iteration
+            error_mo = mo_coeff_next - mo_coeff_iter_prev
+            mo_diff = np.max(np.abs(error_mo))
+            print (f" LiCN-Accelerated iter {iter_count}, max MO diff: {mo_diff:.2e}")
+            
+            if iter_count > 0 and mo_diff < self.convergence_threshold:
+                # Store history for the NEXT time step's predictor
+                self.F_prev_step = local_F_start.copy() 
+                
+                # Update system state
+                self.mo_coeff = mo_coeff_next
+                
+                # Update self.F for the final state (consistency)
+                dm_final = self.make_rdm1(mo_coeff_next, self.mo_occ)
+                E_next_final = self.electric_field(self.t + self.dt)
+                self.F = self.get_fock_matrix(dm_final, E_next_final)
+                
+                # print(f"LiCN-Accelerated converged in {iter_count} iterations. MO diff: {mo_diff:.2e}")
+                return
+            
+            # Update 'prev' for the next comparison
+            mo_coeff_iter_prev = mo_coeff_next.copy()
+
+            # C. Build the 'Output' Fock Matrix for Anderson Mixing
+            dm_next = self.make_rdm1(mo_coeff=mo_coeff_next, mo_occ=self.mo_occ)
+            E_next_val = self.electric_field(self.t + self.dt)
+            F_next_raw = self.get_fock_matrix(dm_next, E_next_val)
+            F_out_next = F_next_raw * self.mu # Normalize
+            
+            # D. Anderson Mixing (Mix F to generate next guess)
+            F_guess_next = accelerator.compute(F_guess_next, F_out_next)
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: LiCN-Accelerated did not converge. MO Diff: {mo_diff:.2e}")
+                self.F_prev_step = local_F_start.copy() 
+                self.mo_coeff = mo_coeff_next
+                self.F = F_next_raw.copy()
+            
+def predictor_corrector_accelerated(self, F_current, E_t, dt=None):
+        """
+        P-C propagation with Time-Domain Extrapolation and Anderson Acceleration.
+        Convergence criteria: Change in MO coefficients.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+        
+        local_F_start = F_current * self.mu # Normalize input F
+
+        F_guess_next = local_F_start.copy()
+
+        # Initialize Accelerator
+        accelerator = AndersonAcceleration(history_size=6, regularization=1e-5)
+        
+        # Initialize previous iteration coefficients for convergence check
+        # Initially set to current time step coefficients
+        mo_coeff_iter_prev = self.mo_coeff.copy()
+
+        # Helper to solve Crank-Nicolson for a given F_avg
+        def solve_cn(F_avg, C_in):
+            # (S + i*dt/2 * F_avg) C_next = (S - i*dt/2 * F_avg) C_in
+            lhs = self.overlap + 0.5j * dt * F_avg
+            rhs = self.overlap - 0.5j * dt * F_avg
+            rhs_vec = rhs @ C_in
+            return np.linalg.solve(lhs, rhs_vec)
+
+        for iter_count in range(self.max_iterations):
+            # A. Midpoint approximation: F_mid = 0.5 * (F(t) + F_guess(t+dt))
+            F_average_scaled = 0.5 * (local_F_start + F_guess_next)
+            
+            # B. Propagate to get Candidate MOs
+            mo_coeff_next = solve_cn(F_average_scaled, self.mo_coeff)
+            
+            # --- C. Convergence Check (MO Coefficients) ---
+            # Compare current MOs with MOs from the previous iteration
+            error_mo = mo_coeff_next - mo_coeff_iter_prev
+            mo_diff = np.max(np.abs(error_mo))
+            print (f" P-C iteration {iter_count}, max MO diff: {mo_diff:.2e}")
+            # Check convergence (skip first iter to allow predictor to correct once)
+            if iter_count > 0 and mo_diff < self.convergence_threshold:
+                # Update system state
+                self.mo_coeff = mo_coeff_next
+                self.F_prev_step = local_F_start.copy() # Store F(t) for next step's extrapolation
+                
+                # We need to build the final F to store it in self.F, 
+                # even though we didn't use it for the check this specific time.
+                dm_final = self.make_rdm1(mo_coeff_next, self.mo_occ)
+                E_next_final = self.electric_field(self.t + self.dt)
+                self.F = self.get_fock_matrix(dm_final, E_next_final)
+                
+                return
+
+            # Update 'prev' for the next comparison
+            mo_coeff_iter_prev = mo_coeff_next.copy()
+
+            # D. Build new Fock F_out(t+dt) for Anderson Mixing
+            dm_next = self.make_rdm1(mo_coeff_next, self.mo_occ)
+            E_next_val = self.electric_field(self.t + self.dt)
+            F_next_raw = self.get_fock_matrix(dm_next, E_next_val)
+            F_out_next = F_next_raw * self.mu # Normalize
+            
+            # E. Anderson Acceleration / Mixing (On Fock Matrix)
+            # We mix F because mixing C destroys orthogonality
+            F_guess_next = accelerator.compute(F_guess_next, F_out_next)
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: PC-Accelerated did not converge. MO Diff: {mo_diff:.2e}")
+                self.mo_coeff = mo_coeff_next
+                self.F_prev_step = local_F_start.copy()
+                self.F = F_next_raw.copy()
+
+def linear_interpolated_crank_nicolson_diis(self, F_current, E_t, dt=None, num_substeps=5):
+        """
+        Performs propagation by linearly interpolating F between t and t+dt.
+        Uses DIIS to accelerate the self-consistency of F(t+dt).
+        
+        Args:
+            F_current: Fock matrix at time t (F_start).
+            num_substeps (int): Number of uniform substeps for the CN integration.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+
+        # Constants for the propagation
+        local_F_start = F_current * self.mu # F(t)
+        sub_dt = dt / num_substeps
+        
+        # --- Helper: Run the full substep chain ---
+        # This function takes F_end (the target Fock matrix) and propagates 
+        # from t to t+dt using linear interpolation.
+        def run_substep_propagation(F_end_val):
+            C_curr = self.mo_coeff.copy() # Start from C(t)
+            
+            for k in range(num_substeps):
+                # Calculate interpolation ratio for the midpoint of the current substep
+                # Time at midpoint of substep k is: t + k*sub_dt + 0.5*sub_dt
+                # Fraction of total dt is: (k + 0.5) / num_substeps
+                tau_ratio = (k + 0.5) / num_substeps
+                
+                # Linearly interpolate Fock matrix: F(tau) ~ (1-tau)F_start + tau*F_end
+                F_sub_avg = (1.0 - tau_ratio) * local_F_start + tau_ratio * F_end_val
+                
+                # Crank-Nicolson Step for this substep
+                # (S + i*dt/2 * F_sub) @ C_{k+1} = (S - i*dt/2 * F_sub) @ C_k
+                # Note: using sub_dt
+                rhs_op = self.overlap - 0.5j * sub_dt * F_sub_avg
+                lhs_op = self.overlap + 0.5j * sub_dt * F_sub_avg
+                
+                # Solve linear system
+                C_curr = np.linalg.solve(lhs_op, rhs_op @ C_curr)
+            
+            return C_curr
+
+        # --- Predictor (Initial Guess) ---
+        # Initial guess: Assume F(t+dt) is roughly F(t)
+        # We run one propagation pass assuming F is constant to get a good starting C(t+dt)
+        mo_coeff_predict_iter = run_substep_propagation(local_F_start)
+        
+        # Initialize DIIS
+        diis = DIIS(subspace_size=8)
+
+        # --- DIIS Loop ---
+        for iter_count in range(1, self.max_iterations):
+            # 1. Build F(t+dt) based on current prediction of MOs
+            dm_predict = self.make_rdm1(mo_coeff=mo_coeff_predict_iter, mo_occ=self.mo_occ)
+            E_t_plus_dt = self.electric_field(self.t + self.dt)
+            F_predict_raw = self.get_fock_matrix(dm_predict, E_t_plus_dt)
+            F_end_target = F_predict_raw * self.mu
+
+            # 2. Corrector Step: Propagate strictly from t -> t+dt using the new F_end_target
+            mo_coeff_corrected = run_substep_propagation(F_end_target)
+
+            # 3. Calculate Error
+            error = mo_coeff_corrected - mo_coeff_predict_iter
+            mo_diff = np.max(np.abs(error))
+            
+            print(f" Linear-CN (DIIS) iter {iter_count}, diff: {mo_diff:.2e}")
+
+            if iter_count > 0 and mo_diff < self.convergence_threshold:
+                mo_coeff_predict_iter = mo_coeff_corrected
+                self.F = F_predict_raw.copy() # Update cached Fock
+                break
+            
+            # 4. DIIS Update and Extrapolation
+            diis.update(mo_coeff_corrected, error)
+            
+            if iter_count >= diis.min_subspace_size:
+                mo_extrapolated = diis.extrapolate()
+                # CRITICAL: DIIS extrapolation destroys orthogonality. Fix it.
+                mo_coeff_predict_iter = self.orthogonalize_mo_coeff(mo_extrapolated)
+            else:
+                mo_coeff_predict_iter = mo_coeff_corrected
+
+            if iter_count == self.max_iterations - 1:
+                 print(f"Warning: Linear-CN (DIIS) did not converge. Diff: {mo_diff:.2e}")
+
+        self.mo_coeff = mo_coeff_predict_iter.copy()
+
+def predictor_corrector_propagation_diis(self, F_current, E_t, dt=None):
+        """Performs one step of P-C propagation with stabilized DIIS."""
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+
+        local_F_scaled = F_current * self.mu
+        F_t_scaled = local_F_scaled.copy()
+        
+        # Predictor (step 0)
+        A_pred = self.overlap + 0.5j * dt * F_t_scaled
+        B_pred = self.overlap - 0.5j * dt * F_t_scaled
+        mo_coeff_predict_iter = np.linalg.solve(A_pred, B_pred @ self.mo_coeff)
+
+        # 初始化 DIIS
+        diis = DIIS(subspace_size=16) # 可以尝试调整 subspace_size
+
+        for iter_count in range(1,self.max_iterations):
+            # 1. 根据当前的预测 C(t+dt) 构建新的 Fock 矩阵
+            dm_predict = self.make_rdm1(mo_coeff=mo_coeff_predict_iter, mo_occ=self.mo_occ)
+            E_t_plus_dt = self.electric_field(self.t + self.dt)
+            F_predict_raw = self.get_fock_matrix(dm_predict, E_t_plus_dt)
+            
+            F_predict_scaled = F_predict_raw * self.mu
+            F_average_scaled = 0.5 * local_F_scaled + 0.5 * F_predict_scaled
+            
+            # 2. Corrector 步，得到“修正后”的系数
+            A_corr = self.overlap + 0.5j * dt * F_average_scaled
+            B_corr = self.overlap - 0.5j * dt * F_average_scaled
+            mo_coeff_corrected = np.linalg.solve(A_corr, B_corr @ self.mo_coeff)
+
+            # 3. 计算误差：输入与输出的差异
+            error = mo_coeff_corrected - mo_coeff_predict_iter
+            mo_diff = np.max(np.abs(error))
+            print (f" P-C (DIIS) iteration {iter_count}, max diff: {mo_diff:.2e}")
+            if iter_count > 0 and mo_diff < self.convergence_threshold:
+                mo_coeff_predict_iter = mo_coeff_corrected
+                break
+            
+            # 4. DIIS 更新与外推
+            # 我们希望找到一组组合，使得它们的 error 最小。
+            # 这里的参数传入 mo_coeff_corrected，表示我们信任校正后的结果
+            diis.update(mo_coeff_corrected, error)
+            
+            if iter_count >= diis.min_subspace_size:
+                mo_extrapolated = diis.extrapolate()
+                #CRITICAL: DIIS 外推破坏了正交性，必须重新正交化！
+                mo_coeff_predict_iter = self.orthogonalize_mo_coeff(mo_extrapolated)
+            else:
+                # 在 DIIS 子空间填满前，直接使用校正后的结果
+                mo_coeff_predict_iter = mo_coeff_corrected
+
+            # 保存最后一个计算的 F，以备不时之需
+            self.F = F_predict_raw.copy()
+
+            if iter_count == self.max_iterations - 1:
+                 print(f"Warning: P-C (DIIS) did not converge. Diff: {mo_diff:.2e}")
+
+        self.mo_coeff = mo_coeff_predict_iter.copy()
+
+def predictor_corrector_propagation_diis2(self, F_current, E_t, dt=None):
+        """
+        P-C propagation with DIIS acceleration on the FOCK matrix.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+        
+        local_F_start = F_current / self.mu
+
+        # --- Predictor Step ---
+        # 初始猜测：F(t+dt) 约等于 F(t)
+        # 你也可以用 F(t) + (F(t) - F(t-dt)) 来做更好的猜测
+        F_guess_next = local_F_start.copy()
+
+        # 初始化 DIIS，用于混合 Fock 矩阵
+        diis = DIIS(subspace_size=8, min_subspace_size=2, regularization=1e-5)
+
+        for iter_count in range(self.max_iterations):
+            # 1. 构建平均 Fock 矩阵 (Crank-Nicolson 需要)
+            # F_avg = 0.5 * (F(t) + F_guess(t+dt))
+            F_average_scaled = 0.5 * (local_F_start + F_guess_next)
+            
+            # 2. 传播一步得到新的 MO 系数
+            A_corr = self.overlap + 0.5j * dt * F_average_scaled
+            B_corr = self.overlap - 0.5j * dt * F_average_scaled
+            # 使用 solve 求解线性方程组 A * C_next = B * C_current
+            mo_coeff_next = np.linalg.solve(A_corr, B_corr @ self.mo_coeff)
+
+            # 3. 基于新的 MO 系数构建新的 Fock 矩阵 F_out(t+dt)
+            dm_next = self.make_rdm1(mo_coeff_next, self.mo_occ)
+            E_next_val = self.electric_field(self.t + self.dt)
+            F_next_raw = self.get_fock_matrix(dm_next, E_next_val)
+            F_out_next = F_next_raw / self.mu
+            
+            # 4. 计算误差：F_out - F_guess
+            error = F_out_next - F_guess_next
+            fock_diff = np.max(np.abs(error))
+
+            # 5. 收敛检查
+            if iter_count > 0 and fock_diff < self.convergence_threshold:
+                self.mo_coeff = mo_coeff_next # 保存收敛后的 MO 系数
+                self.F = F_next_raw.copy()    # 保存收敛后的 Fock 矩阵
+                # print(f"Converged in {iter_count} iterations. Diff: {fock_diff:.2e}")
+                return
+
+            # 6. DIIS 更新
+            diis.update(F_guess_next, error)
+            
+            # 7. 生成下一个猜测
+            # 如果 DIIS 子空间太小，或者误差太大，可以混合一定比例的 F_out (damping)
+            if iter_count < 2:
+                 # 初期使用简单的线性混合 (Damping)，防止 DIIS 过早介入导致不稳定
+                 damping_factor = 0.5 
+                 F_guess_next = (1.0 - damping_factor) * F_guess_next + damping_factor * F_out_next
+            else:
+                 # 使用 DIIS 外推
+                 F_extrapolated = diis.extrapolate()
+                 # 可选：为了更稳定，可以将外推结果与最新结果再做一次轻微混合
+                 # F_guess_next = 0.8 * F_extrapolated + 0.2 * F_out_next
+                 F_guess_next = F_extrapolated
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: P-C (Fock DIIS) did not converge. Diff: {fock_diff:.2e}")
+                # 即使没收敛，也更新为最后一次计算的结果
+                self.mo_coeff = mo_coeff_next
+                self.F = F_next_raw.copy()
+
+def magnus4_propagation(self, F_current, E_t, dt=None):
+        """
+        Performs 4th-order Magnus propagation using Gauss-Legendre quadrature points.
+        Estimates F(tau1) and F(tau2) by linear interpolation between F(t) and F(t+dt)
+        within the predictor-corrector loop.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+
+        # Gauss-Legendre coefficients
+        sqrt3 = np.sqrt(3)
+        c1 = 0.5 - sqrt3 / 6.0  # approx 0.211
+        c2 = 0.5 + sqrt3 / 6.0  # approx 0.789
+
+        # Pre-fetch orthogonalization matrices
+        X = self.overlap_half_inv
+        X_inv = self.overlap_half
+
+        local_F_start = F_current * self.mu
+
+        # --- Helper to build Omega and propagate ---
+        def apply_magnus4(F_start_val, F_end_val, C_start):
+            # 1. Interpolate F at Gauss points (in AO basis)
+            # F(tau) ~ (1 - c) * F(t) + c * F(t+dt)
+            F1 = (1.0 - c1) * F_start_val + c1 * F_end_val
+            F2 = (1.0 - c2) * F_start_val + c2 * F_end_val
+
+            # 2. Transform to orthogonal basis
+            F1_orth = X.conj().T @ F1 @ X
+            F2_orth = X.conj().T @ F2 @ X
+
+            # 3. Construct Magnus generator Omega (in orthogonal basis)
+            # Term 1: Average Hamiltonian part (like midpoint)
+            Omega1 = -1j * (dt / 2.0) * (F1_orth + F2_orth)
+            
+            # Term 2: Commutator part (handles non-commutativity, gives 4th order)
+            # [F2, F1] = F2 @ F1 - F1 @ F2
+            Commutator = F2_orth @ F1_orth - F1_orth @ F2_orth
+            Omega2 = (sqrt3 * dt**2 / 12.0) * Commutator
+
+            Omega = Omega1 + Omega2
+
+            # 4. Exponentiate and transform back
+            U_orth = scipy.linalg.expm(Omega)
+            return X @ U_orth @ X_inv @ C_start
+
+        # --- Predictor Step ---
+        # Initially assume F(t+dt) = F(t), so F1 = F2 = F(t). 
+        # The commutator term will be zero initially.
+        mo_coeff_predict = apply_magnus4(local_F_start, local_F_start, self.mo_coeff)
+
+        # --- Corrector Loop ---
+        for iter_count in range(self.max_iterations):
+            # 1. Build new estimate for F(t+dt)
+            dm_predict = self.make_rdm1(mo_coeff_predict, self.mo_occ)
+            E_next = self.electric_field(self.t + self.dt)
+            F_end_raw = self.get_fock_matrix(dm_predict, E_next)
+            F_end_scaled = F_end_raw / self.mu
+
+            # 2. Re-propagate using interpolated F1, F2 based on new F(t+dt)
+            mo_coeff_corrected = apply_magnus4(local_F_start, F_end_scaled, self.mo_coeff)
+            print (f" Magnus4 iteration {iter_count}, max diff: {np.max(np.abs(mo_coeff_corrected - mo_coeff_predict))}")
+            # 3. Convergence Check
+            mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict))
+            if iter_count > 0 and mo_diff < self.convergence_threshold:
+                mo_coeff_predict = mo_coeff_corrected
+                break
+            
+            mo_coeff_predict = mo_coeff_corrected
+            self.F = F_end_raw.copy()
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: Magnus4 propagation did not converge. Diff: {mo_diff:.2e}")
+
+        self.mo_coeff = mo_coeff_predict.copy()
 
 def apply_scf(self):
 
@@ -59,6 +520,7 @@ def apply_scf(self):
         self.mf = rhf
         self.initialize_molecular_orbitals(n_virtual=0)
         return rhf.kernel()
+
 def apply_scf_v2(self):
 
         """
@@ -84,6 +546,293 @@ def apply_scf_v2(self):
         #self.mf = rhf
         #self.initialize_molecular_orbitals(n_virtual=0)
         return rhf.energy_tot()
+
+def linear_interpolated_crank_nicolson(self, F_current, E_t, dt=None, num_substeps=4):
+        """
+        Performs propagation by linearly interpolating F between t and t+dt,
+        and applying Crank-Nicolson propagator over small uniform substeps.
+        
+        Args:
+            F_current: Fock matrix at time t.
+            E_t: Electric field at time t (unused directly, kept for signature).
+            dt: Time step.
+            num_substeps (int): Number of uniform substeps.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+
+        local_F_start = F_current / self.mu
+        sub_dt = dt / num_substeps
+
+        # --- Helper: Apply substepped CN with linear F interpolation ---
+        def apply_linear_cn(F_start_val, F_end_val, C_start):
+            C_curr = C_start.copy()
+            
+            for k in range(num_substeps):
+                # Calculate interpolation ratios for start (tau_k) and end (tau_{k+1}) of substep
+                ratio_k = k / num_substeps
+                ratio_kp1 = (k + 1) / num_substeps
+                
+                # Interpolate F at substep boundaries
+                F_k = (1.0 - ratio_k) * F_start_val + ratio_k * F_end_val
+                F_kp1 = (1.0 - ratio_kp1) * F_start_val + ratio_kp1 * F_end_val
+                
+                # Average F for this substep (standard CN approximation for the substep)
+                F_avg_sub = 0.5 * (F_k + F_kp1)
+                
+                # Crank-Nicolson step: (S + i*dt/2*F) * C_next = (S - i*dt/2*F) * C_curr
+                # A @ C_next = B @ C_curr
+                A = self.overlap + 0.5j * sub_dt * F_avg_sub
+                B = self.overlap - 0.5j * sub_dt * F_avg_sub
+                
+                # Solve linear system for C_next
+                C_curr = np.linalg.solve(A, B @ C_curr)
+                
+            return C_curr
+
+        # --- Predictor Step ---
+        # Assume F(t+dt) approx F(t) initially
+        mo_coeff_predict = apply_linear_cn(local_F_start, local_F_start, self.mo_coeff)
+
+        # --- Corrector Loop ---
+        for iter_count in range(self.max_iterations):
+            # 1. Build F(t+dt) estimate
+            dm_predict = self.make_rdm1(mo_coeff_predict, self.mo_occ)
+            E_next = self.electric_field(self.t + self.dt)
+            F_end_raw = self.get_fock_matrix(dm_predict, E_next)
+            F_end_scaled = F_end_raw / self.mu
+
+            # 2. Repropagate with better F(t+dt) estimate
+            mo_coeff_corrected = apply_linear_cn(local_F_start, F_end_scaled, self.mo_coeff)
+            print (f" LiCN iteration {iter_count}, max diff: {np.max(np.abs(mo_coeff_corrected - mo_coeff_predict))}")
+            # 3. Convergence Check
+            mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict))
+            if iter_count > 0 and mo_diff < self.convergence_threshold:
+                mo_coeff_predict = mo_coeff_corrected
+                break
+            
+            mo_coeff_predict = mo_coeff_corrected
+            self.F = F_end_raw.copy()
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: Linear CN propagation did not converge. Diff: {mo_diff:.2e}")
+
+        self.mo_coeff = mo_coeff_predict.copy()
+
+def etrs_propagation(self, F_current, E_t, dt=None):
+        """
+        Performs one step of Enforced Time-Reversal Symmetry (ETRS) propagation.
+        Uses split-operator: U = exp(-i * dt/2 * F(t+dt)) * exp(-i * dt/2 * F(t))
+        Optimized by pre-calculating the first half-step and using explicit diagonalization.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+
+        # Pre-fetch orthogonalization matrices
+        X = self.overlap_half_inv
+        X_inv = self.overlap_half
+
+        # --- Helper: Apply exp(-i * tau * F) using diagonalization ---
+        # distinct from general expm, eigh is faster/more stable for Hermitian F
+        def apply_half_step(F_eff, C_in, tau):
+            # 1. Transform Fock to orthogonal basis: F' = X^dagger @ F @ X
+            F_orth = X.conj().T @ F_eff @ X
+            
+            # 2. Diagonalize F_orth (It is Hermitian)
+            evals, evecs = scipy.linalg.eigh(F_orth)
+            
+            # 3. Form propagator in diagonal basis: exp(-i * tau * eigenvalues)
+            # U_orth = evecs @ diag(exp(...)) @ evecs.dagger
+            # We can optimize applying it to C:
+            # C_out = X @ (U_orth @ (X_inv @ C_in))
+            
+            # Transform input C to orthogonal basis
+            C_orth_in = X_inv @ C_in
+            
+            # Apply diagonal propagator
+            # U_orth @ C_orth_in  = evecs @ (np.diag(phases) @ (evecs.conj().T @ C_orth_in))
+            phases = np.exp(-1j * tau * evals)
+            C_orth_out = evecs @ (phases[:, None] * (evecs.conj().T @ C_orth_in))
+            
+            # Transform back to AO basis
+            return X @ C_orth_out
+
+        # --- 1. Pre-calculation (Fixed during iterations) ---
+        # Calculate the half-step propagation from t to t+dt/2 using F(t)
+        # C_mid = exp(-i * dt/2 * F(t)) * C(t)
+        local_F_scaled = F_current / self.mu
+        C_mid_fixed = apply_half_step(local_F_scaled, self.mo_coeff, dt / 2.0)
+
+        # --- 2. Predictor Step ---
+        # Initial guess for F(t+dt) can be F(t)
+        # C_predict = exp(-i * dt/2 * F(t)) * C_mid_fixed = exp(-i*dt*F(t)) * C(t)
+        # Re-using C_mid_fixed for efficiency in first guess
+        mo_coeff_predict_iter = apply_half_step(local_F_scaled, C_mid_fixed, dt / 2.0)
+
+        # --- 3. Corrector Loop ---
+        for iter_count in range(self.max_iterations):
+            # a. Build F(t+dt) using predicted density
+            dm_predict = self.make_rdm1(mo_coeff=mo_coeff_predict_iter, mo_occ=self.mo_occ)
+            E_t_plus_dt = self.electric_field(self.t + self.dt)
+            F_predict_raw = self.get_fock_matrix(dm_predict, E_t_plus_dt)
+            F_predict_scaled = F_predict_raw / self.mu
+
+            # b. Apply second half-step using F(t+dt)
+            # C(t+dt) = exp(-i * dt/2 * F(t+dt)) * C_mid_fixed
+            mo_coeff_corrected = apply_half_step(F_predict_scaled, C_mid_fixed, dt / 2.0)
+
+            # c. Convergence Check
+            mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict_iter))
+            if mo_diff < self.convergence_threshold:
+                mo_coeff_predict_iter = mo_coeff_corrected
+                break
+            
+            mo_coeff_predict_iter = mo_coeff_corrected
+            self.F = F_predict_raw.copy() # Save for consistency
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: ETRS did not converge. Final diff: {mo_diff:.2e}")
+
+        self.mo_coeff = mo_coeff_predict_iter.copy()
+
+def exponential_midpoint_propagation(self, F_current, E_t, dt=None):
+        """
+        Performs one step of exponential midpoint propagation.
+        Uses unitary propagator U = exp(-i * dt * F_mid) in an orthogonal basis.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+
+        # Pre-fetch orthogonalization matrices
+        # X = S^{-1/2}, X_inv = S^{1/2}
+        X = self.overlap_half_inv
+        X_inv = self.overlap_half
+
+        local_F_scaled = F_current * self.mu
+        #if self.prev_F is not None:
+        #        F_predictor = (2*F_current- self.overlap_half @ self.prev_F @ self.overlap_half) * self.mu
+        #else:
+        #        F_predictor = local_F_scaled.copy()
+        # Helper to perform the unitary step: C(t+dt) = X @ exp(-i*dt*F') @ X_inv @ C(t)
+        def apply_propagator(F_eff, C_start, time_step):
+            # Transform Fock to orthogonal basis: F' = S^{-1/2} @ F @ S^{-1/2}
+            F_orth = X.conj().T @ F_eff @ X
+            # Calculate unitary propagator in orthogonal basis
+            U_orth = scipy.linalg.expm(-1j * time_step * F_orth)
+            # Transform back to AO basis
+            return X @ U_orth @ X_inv @ C_start
+
+        # --- Predictor Step ---
+        # Predict C(t+dt) using F(t)
+        mo_coeff_predict_iter = apply_propagator(local_F_scaled, self.mo_coeff, dt)
+
+        # --- Corrector Loop ---
+        for iter_count in range(self.max_iterations):
+            # 1. Build F(t+dt) using predicted density
+            dm_predict = self.make_rdm1(mo_coeff=mo_coeff_predict_iter, mo_occ=self.mo_occ)
+            E_t_plus_dt = self.electric_field(self.t + self.dt)
+            F_predict_raw = self.get_fock_matrix(dm_predict, E_t_plus_dt)
+            
+            # 2. Calculate Average Fock matrix (Midpoint approximation)
+            F_predict_scaled = F_predict_raw * self.mu
+            F_average_scaled = 0.5 * (local_F_scaled + F_predict_scaled)
+
+            # 3. Correct C(t+dt) using F_average
+            mo_coeff_corrected = apply_propagator(F_average_scaled, self.mo_coeff, dt)
+
+            # 4. Convergence Check
+            if iter_count > 0:
+                mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict_iter))
+                print(f"  Iteration: {iter_count}, MO diff: {mo_diff:.2e}") # Optional debug
+                if mo_diff < self.convergence_threshold:
+                    mo_coeff_predict_iter = mo_coeff_corrected
+                    break
+            
+            mo_coeff_predict_iter = mo_coeff_corrected
+            # Save the last predicted F for consistency if needed elsewhere
+            self.F = F_predict_raw.copy() 
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: Exponential midpoint did not converge. Final diff: {mo_diff:.2e}")
+
+        self.mo_coeff = mo_coeff_predict_iter.copy()
+
+def linear_interpolated_exponential_propagation(self, F_current, E_t, dt=None, num_substeps=10):
+        """
+        Performs propagation by assuming F varies linearly from t to t+dt,
+        and applying exponential propagators over small uniform substeps.
+        U(t+dt, t) ~ Prod_{k=N-1 to 0} exp(-i * (dt/N) * F(tau_k))
+        
+        Args:
+            F_current: Fock matrix at time t.
+            E_t: Electric field at time t (unused directly here as F_current includes it, but kept for signature consistency).
+            dt: Time step.
+            num_substeps (int): Number of uniform substeps to divide dt into.
+        """
+        self.prev_mo_coeff = self.mo_coeff.copy()
+        if dt is None: dt = self.dt
+
+        # Pre-fetch orthogonalization matrices
+        # X = S^{-1/2} (transforms F to orthogonal basis)
+        # X_inv = S^{1/2} (transforms C to orthogonal basis)
+        X = self.overlap_half_inv      
+        X_inv = self.overlap_half      
+
+        local_F_start = F_current * self.mu
+        sub_dt = dt / num_substeps
+
+        # --- Helper Function: Propagate using linear interpolation ---
+        def apply_linear_propagator(F_start, F_end, C_start):
+            # 1. Transform initial MOs to orthogonal basis: C_orth = S^{1/2} @ C_AO
+            C_orth = X_inv @ C_start
+            
+            # 2. Sequential propagation over substeps
+            for k in range(num_substeps):
+                # Calculate interpolation ratio for the midpoint of current substep
+                # k=0 puts us at 0.5 * sub_dt. Ratio = (0.5 * sub_dt) / dt = 0.5 / N
+                tau_ratio = (k + 0.5) / num_substeps
+                
+                # Linearly interpolate Fock matrix at this substep
+                F_sub = (1.0 - tau_ratio) * F_start + tau_ratio * F_end
+                
+                # Transform interpolated F to orthogonal basis: F' = S^{-1/2} @ F @ S^{-1/2}
+                F_orth_sub = X.conj().T @ F_sub @ X
+                
+                # Apply unitary propagator for this substep: C_orth = exp(-i * sub_dt * F') @ C_orth
+                U_sub = scipy.linalg.expm(-1j * sub_dt * F_orth_sub)
+                C_orth = U_sub @ C_orth
+                
+            # 3. Transform final MOs back to AO basis: C_AO = S^{-1/2} @ C_orth
+            return X @ C_orth
+
+        # --- Predictor Step ---
+        # Initial guess: F(t+dt) is approximately F(t)
+        mo_coeff_predict = apply_linear_propagator(local_F_start, local_F_start, self.mo_coeff)
+
+        # --- Corrector Loop ---
+        for iter_count in range(1,self.max_iterations):
+            # 1. Construct F(t+dt) based on predicted MOs
+            dm_predict = self.make_rdm1(mo_coeff_predict, self.mo_occ)
+            E_next = self.electric_field(self.t + self.dt)
+            F_end_raw = self.get_fock_matrix(dm_predict, E_next)
+            F_end_scaled = F_end_raw * self.mu
+
+            # 2. Re-propagate using the new estimate of F(t+dt) for interpolation
+            mo_coeff_corrected = apply_linear_propagator(local_F_start, F_end_scaled, self.mo_coeff)
+            print (f"  Iteration: {iter_count}, MO diff: {np.max(np.abs(mo_coeff_corrected - mo_coeff_predict)):.2e}") # Optional debug
+            # 3. Convergence Check
+            mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict))
+            if mo_diff < self.convergence_threshold:
+                mo_coeff_predict = mo_coeff_corrected
+                break
+            
+            mo_coeff_predict = mo_coeff_corrected
+            self.F = F_end_raw.copy() # Cache F(t+dt) for consistency
+
+            if iter_count == self.max_iterations - 1:
+                print(f"Warning: Linear interpolated propagation did not converge. Diff: {mo_diff:.2e}")
+
+        self.mo_coeff = mo_coeff_predict.copy()
 
 class TDRHFSimulation:
     def __init__(self, mf, dt, steps=0, E0=0, field_type='none', omega=0, tau=0, t0=0, propagation_method='predictor_corrector',
@@ -128,6 +877,7 @@ class TDRHFSimulation:
         self.imaginary_time = imaginary_time
         self.imaginary_time_dt = imaginary_time_dt
         self.F = None
+        self.prev_F = None
 
         self.dm_last = 0
         self.veff_last = 0
@@ -195,12 +945,29 @@ class TDRHFSimulation:
         
         return 0.0 # 'none' or other types
 
-    def propagate_electrons(self, F_current, E_t, dt = None):
+    def propagate_electrons(self, F_current, E_t, dt=None):
         """Propagates electronic wavefunction using the specified method."""
         if dt is None:
             dt = self.dt
+            
         if self.propagation_method == 'predictor_corrector':
-            self.predictor_corrector_propagation(F_current, E_t, dt = dt )
+            self.predictor_corrector_propagation(F_current, E_t, dt=dt)
+        elif self.propagation_method == 'predictor_corrector_diis':
+            self.predictor_corrector_propagation_diis(F_current, E_t, dt=dt)
+            
+        elif self.propagation_method == 'exponential_midpoint':
+            self.exponential_midpoint_propagation(F_current, E_t, dt=dt)
+        elif self.propagation_method == 'linear_interpolated':
+            self.linear_interpolated_exponential_propagation(F_current, E_t, dt=dt, num_substeps=5)
+        elif self.propagation_method == 'linear_interpolated_crank_nicolson_diis':
+            self.linear_interpolated_crank_nicolson_diis(F_current, E_t, dt=dt, num_substeps=1)
+        elif self.propagation_method == 'magnus4':
+             self.magnus4_propagation(F_current, E_t, dt=dt)
+        elif self.propagation_method == 'accelerated':
+             self.predictor_corrector_accelerated(F_current, E_t, dt=dt)
+        elif self.propagation_method == 'linear_interpolated_cn_accelerated':
+        # You can tune num_substeps here (e.g., 5 or 10)
+            self.linear_interpolated_crank_nicolson_accelerated(F_current, E_t, dt=dt, num_substeps=10)
         else:
             raise ValueError(f"Unknown propagation method: {self.propagation_method}")
 
@@ -210,7 +977,7 @@ class TDRHFSimulation:
         if dt is None: dt = self.dt
 
         # Predictor
-        local_F_scaled = F_current / self.mu
+        local_F_scaled = F_current * self.mu
         #local_F_scaled -= self.overlap @ self.make_rdm1(self.mo_coeff, self.mo_occ).real /2. @ local_F_scaled
         #if self.ehrenfest:
         #    local_F_scaled = self.apply_elec_nuc_coupling(local_F_scaled)
@@ -227,7 +994,7 @@ class TDRHFSimulation:
             E_t_plus_dt = self.electric_field(self.t + self.dt)
             F_predict_raw = self.get_fock_matrix(dm_predict, E_t_plus_dt)
             self.F = F_predict_raw.copy()
-            F_predict_scaled = F_predict_raw / self.mu
+            F_predict_scaled = F_predict_raw * self.mu
             #F_predict_scaled -= self.overlap @ dm_predict.real/2. @ F_predict_scaled
             #if self.ehrenfest:
             #   F_predict_scaled = self.apply_elec_nuc_coupling(F_predict_scaled)
@@ -544,7 +1311,7 @@ class TDRHFSimulation:
             E_t_current = self.electric_field(self.t)
             F_current_for_prop = self.get_fock_matrix(dm_current, E_t_current)
             self.propagate_electrons(F_current_for_prop, E_t_current, dt= dt )
-            self.mo_coeff= self.orthogonalize_mo_coeff(self.mo_coeff)
+            #self.mo_coeff= self.orthogonalize_mo_coeff(self.mo_coeff)
 
         if (self.imaginary_time):
             dm_next_step = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
@@ -555,6 +1322,7 @@ class TDRHFSimulation:
 
         dm_next_step = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
         F_next_step = self.get_fock_matrix(dm_next_step)
+        self.prev_F =  self.overlap_half_inv @ F_next_step @ self.overlap_half_inv
         self.F = F_next_step
         self.dm_total = dm_next_step
         if (apply_scf):
@@ -607,10 +1375,25 @@ class TDRHFSimulation:
     
     def reset_mo_coeff(self):
         self.mo_coeff = self.prev_mo_coeff.copy()
+    
+    def reinitialize_simulation(self,mo_coeff, positions=None):
+        """Reinitializes the simulation with new MO coefficients and optional nuclear positions."""
+        self.mo_coeff = mo_coeff.copy()
+        if positions is not None:
+            self.positions = positions.copy()
+            self.update_mol(self.positions)
         
     apply_scf = apply_scf
     apply_scf_v2 = apply_scf_v2
+    exponential_midpoint_propagation = exponential_midpoint_propagation
+    linear_interpolated_exponential_propagation = linear_interpolated_exponential_propagation 
+    linear_interpolated_crank_nicolson = linear_interpolated_crank_nicolson
+    magnus4_propagation = magnus4_propagation
+    predictor_corrector_propagation_diis = predictor_corrector_propagation_diis
+    linear_interpolated_crank_nicolson_diis = linear_interpolated_crank_nicolson_diis
 
+    predictor_corrector_accelerated = predictor_corrector_accelerated
+    linear_interpolated_crank_nicolson_accelerated = linear_interpolated_crank_nicolson_accelerated
 
 if __name__ == "__main__":
     mol = gto.M(
@@ -629,7 +1412,7 @@ if __name__ == "__main__":
     #mf.mo_occ[4]=0
     #mf.mo_occ[5]=2
 
-    simulation_rhf = TDRHFSimulation(mf, dt=1, nuclei_dt=1,  steps=200, field_type='none',  ehrenfest= True , E0= 0.1,  convergence_threshold=1e-7, output_interval = 10)
+    simulation_rhf = TDRHFSimulation(mf, dt=1, nuclei_dt=1,  steps=100, propagation_method="linear_interpolated_cn_accelerated",field_type='none',  mu=10,ehrenfest= True , E0= 0.0,  convergence_threshold=1e-7, output_interval = 10)
     simulation_rhf.run()
     #dipoles = np.array(simulation_rhf.dipoles)
     #plt.plot(simulation_rhf.times, dipoles[:,2])
