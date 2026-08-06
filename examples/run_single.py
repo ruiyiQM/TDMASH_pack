@@ -5,9 +5,9 @@ from pyscf import gto, dft
 # --- Assumed custom library imports ---
 # These modules were in your original script. Make sure they are available in your Python environment.
 try:
-    from MASH import MASH
-    from MOM import mom_occ_
-    from TDRKS import TDRKSSimulation
+    from tdmash.MASH import MASH
+    from tdmash.MOM import mom_occ_
+    from tdmash.TDRKS import TDRKSSimulation
 except ImportError as e:
     print(f"Warning: Could not import custom modules (MASH, MOM, TDRKS). {e}")
     print("The script will fail if these are not in your PYTHONPATH.")
