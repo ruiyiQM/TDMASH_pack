@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     from pyscf import gto, dft
 
-    from TDUKS import TDUKSSimulation
+    from .TDUKS import TDUKSSimulation
     mol = gto.Mole(atom =
     '''
     N -4.207472 1.315189 0.093245

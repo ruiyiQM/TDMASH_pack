@@ -1,13 +1,13 @@
 
 from pyscf import gto,scf ,dft 
-from Ehrenfest2 import MASH
+from tdmash.Ehrenfest import FixedPathDynamics
 import numpy as np
 
 from matplotlib import pyplot as plt
-from MOM import mom_occ_
+from tdmash.MOM import mom_occ_
 
-from TDRKS import TDRKSSimulation
-from TDRHF import TDRHFSimulation
+from tdmash.TDRKS import TDRKSSimulation
+from tdmash.TDRHF import TDRHFSimulation
 mol = gto.M(atom='''
 N          -7.84651        1.28271       -0.25720
 N          -5.30782        3.39826       -0.51257
@@ -65,8 +65,8 @@ sim1 = TDRKSSimulation(mf1, dt=dt, nuclei_dt=dt, steps=600, field_type='none',  
 sim2 = TDRKSSimulation(mf2, dt=dt, nuclei_dt=dt, steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=1, imaginary_time= False  )
 
 
-# Initialize and run the MASH simulation
-mash_simulation = MASH(
+# Initialize and run the fixed-path simulation
+simulation = FixedPathDynamics(
     sim1 =sim1,
     sim2 =sim2,
     dt=dt,
@@ -81,10 +81,10 @@ mash_simulation = MASH(
     initial_spin=[0,0,-1]
     #output_filename="trajectory_RKS.xyz"
     )
-mash_simulation.run()
+simulation.run()
 
-#np.savez("NHNH_RKS_test_mu_0d1_structure_1_final_debug_overlap.npz", mo_coeff2=mash_simulation.sim2.mo_coeff, mo_coeff1=mash_simulation.sim1.mo_coeff, positions= mash_simulation.sim1.mol.atom_coords())
-mash_simulation.plot_results()
+#np.savez("NHNH_RKS_test_mu_0d1_structure_1_final_debug_overlap.npz", mo_coeff2=simulation.sim2.mo_coeff, mo_coeff1=simulation.sim1.mo_coeff, positions= simulation.sim1.mol.atom_coords())
+simulation.plot_results()
 
 
 

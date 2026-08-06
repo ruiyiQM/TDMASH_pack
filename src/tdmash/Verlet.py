@@ -2,11 +2,11 @@ import numpy as np
 from pyscf import gto, dft, scf
 import matplotlib.pyplot as plt
 
-from TDRKS import TDRKSSimulation
-from TDRHF import TDRHFSimulation
-from TDUHF import TDUHFSimulation
-from TDUKS import TDUKSSimulation
-from TDUOverlap import TDOverlap
+from .TDRKS import TDRKSSimulation
+from .TDRHF import TDRHFSimulation
+from .TDUHF import TDUHFSimulation
+from .TDUKS import TDUKSSimulation
+from .TDUOverlap import TDOverlap
 # --- Define Propagation Methods ---
 # These functions will be "monkey-patched" onto the TDRKSSimulation class.
 

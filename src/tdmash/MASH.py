@@ -1,33 +1,31 @@
 from pyscf import gto, scf
 import numpy as np
 import matplotlib.pyplot as plt
-from TDRHF import TDRHFSimulation
+from .TDRHF import TDRHFSimulation
 
-from TDOverlap import TDOverlap
-from Spin import Spin 
-from FD import Finite_Difference_NAC
-
+from .TDOverlap import TDOverlap
+from .Spin import Spin 
+from .FD import Finite_Difference_NAC
 class MASH:
-    def __init__(self, sim1, sim2,  dt, steps, update_mol_dt=None, nuclei_dt=None, energy_filename=None, overlap_filename=None, eigenvalue_filename=None, output_interval=-1, output_filename="trajectory.xyz", initial_velocity=None, mu_1=1.0, mu_2=1.0, output_consrtaint_filename=None, apply_scf= False,  initial_spin=np.asarray([0,0,-1])):
+    def __init__(self, sim1, sim2, dt, steps, update_mol_dt=None, nuclei_dt=None, energy_filename=None, overlap_filename=None, eigenvalue_filename=None, output_interval=-1, output_filename="trajectory.xyz", initial_velocity=None, mu_1=1.0, mu_2=1.0, output_consrtaint_filename=None, apply_scf=False, initial_spin=np.asarray([0,0,-1])):
 
         self.dt = dt
         self.t = 0.0
 
-        self.mol = sim1.mol  # Assuming both simulations use the same molecule
+        self.mol = sim1.mol 
         self.mu_1 = mu_1
         self.mu_2 = mu_2
         self.steps = steps
         self.update_mol_dt = update_mol_dt
         self.initial_velocity = initial_velocity
-        self.mass = 1822.88839 * np.array(self.mol.atom_mass_list())  # Masses of nuclei in a.u.
+        self.mass = 1822.88839 * np.array(self.mol.atom_mass_list()) 
+        
         if initial_velocity is not None:
-            self.velocities = np.array(initial_velocity)  # Initial velocities of nuclei
+            self.velocities = np.array(initial_velocity)
         else:
-            self.velocities = np.zeros((len(self.mol.atom_coords()), 3))  # Initialize velocities to zero
+            self.velocities = np.zeros((len(self.mol.atom_coords()), 3))
 
-        self.force = np.zeros(self.velocities.shape)  # Initialize force array
-        self.positions = np.array(self.mol.atom_coords(unit="Bohr"))  # Initial positions of nuclei
-
+        self.positions = np.array(self.mol.atom_coords(unit="Bohr"))
 
         if nuclei_dt is None:
             self.nuclei_dt = dt
@@ -36,7 +34,6 @@ class MASH:
 
         self.sim1 = sim1
         self.sim2 = sim2
-
 
         self.output_interval = output_interval
         self.output_filename = output_filename
@@ -49,91 +46,99 @@ class MASH:
         self.potentials_2 = []
         self.kinetic_energies = []
         self.total_energies = []
-        self.overlap_alpha = []
-        self.overlap_beta = []
-        self.overlaps = []
         
-        self.spin = Spin(initial_spin)  # Initialize Spin object with initial spin state
-
-        self.adiabatic_energy = []
-        self.constraint_values =[]
-
-        #self.overlap_class = Overlap(self.sim1, self.sim2)
-
+        self.spin = Spin(initial_spin) 
         self.tdoverlap_class = TDOverlap(self.sim1, self.sim2)
         self.fd = Finite_Difference_NAC(self.sim1, self.sim2)
         self.overlap_output = []
-        self.tdoverlap_output=[]
-
+        self.tdoverlap_output = []
+        self.constraint_values = []
         self.apply_scf = apply_scf
+        self.previous_mol = None
+
     def run(self):
         if self.output_interval > 0:
             f = open(self.output_filename, "w+")
 
-        self.potentials_1.append(self.sim1.energy_tot())
-        self.potentials_2.append(self.sim2.energy_tot())
+        # --- Initialization ---
+        # 1. Calculate initial forces at t=0
+        # We need the electronic state energies and forces before starting the loop
+        pot1_init, force1_init = self.sim1.update_electronic_wavefunction(calculate_force=True, dt=0.0)
+        pot2_init, force2_init = self.sim2.update_electronic_wavefunction(calculate_force=True, dt=0.0)
+        
+        # Determine initial active state force
+        active_state_index = self.spin.determine_active_state_index()
+        self.force = [force1_init, force2_init][active_state_index]
+        
+        self.potentials_1.append(pot1_init)
+        self.potentials_2.append(pot2_init)
+        energy_initial = np.asarray([pot1_init, pot2_init])
 
-        stop_time = self.dt * self.steps  # Total simulation time
-
-        time = []
+        stop_time = self.dt * self.steps
+        time_list = []
 
         while self.t < stop_time:
-            # Store potential energy from the beginning of the step (t) for spin propagation
-            energy_initial = np.asarray([self.potentials_1[-1], self.potentials_2[-1]])
-                
-            # --- Nonreversible Velocity-Verlet Algorithm ---
-            # 1. Update velocities by a half time step using force from the start (t)
+            # --- Velocity Verlet Step 1: Half-step Velocity ---
+            # v(t + dt/2) = v(t) + 0.5 * a(t) * dt
             self.velocities += 0.5 * self.nuclei_dt * np.einsum('i,ij->ij', 1. / self.mass, self.force)
 
-            # 2. Update positions for a full time step to (t + dt)
+            # --- Velocity Verlet Step 2: Full-step Position ---
+            # R(t + dt) = R(t) + v(t + dt/2) * dt
             self.positions += self.velocities * self.nuclei_dt
+            
+            # Update geometries in simulations
             self.sim1.update_mol(self.positions)
             self.sim2.update_mol(self.positions)
 
-             # 3. Calculate new energies and forces at the new position (t + dt)
-            pot1_final, force1_final = self.sim1.update_electronic_wavefunction(calculate_force=True, dt=self.dt)
-            pot2_final, force2_final = self.sim2.update_electronic_wavefunction(calculate_force=True, dt=self.dt)
+            # --- Step 3: Electronic and Spin Propagation ---
+            # Propagate electrons at the NEW geometry
+            pot1_final, force1_final = self.sim1.update_electronic_wavefunction(calculate_force=True, dt=self.dt, mu = self.mu_1, apply_scf=self.apply_scf)
+            pot2_final, force2_final = self.sim2.update_electronic_wavefunction(calculate_force=True, dt=self.dt, mu = self.mu_2, apply_scf=self.apply_scf)
             energy_final = np.asarray([pot1_final, pot2_final])
-                
-            # 4. Propagate the spin over the full time step [t, t + dt]
-            self.tdoverlap_class.update_mo_coeff(self.sim1, self.sim2)
+            
+            # Calculate overlap and propagate the spin state
+            self.tdoverlap_class.update_mo_coeff(self.sim1, self.sim2, previous_mol=self.previous_mol)
             tdoverlap = self.tdoverlap_class.update_overlap()
-            self.spin.propogate_spin(self.nuclei_dt, energy_initial, energy_final, tdoverlap[0])
-            # 5. Determine the active force for the second half-step based on the NEW spin state
+            self.spin.propogate_spin(self.nuclei_dt, energy_initial, energy_final, tdoverlap)
+            
+            # Determine new active state index for the new forces
             active_state_index = self.spin.determine_active_state_index()
+            
+            # --- Velocity Verlet Step 4: Final Half-step Velocity ---
+            # Update force to F(t + dt) based on current active state
             self.force = [force1_final, force2_final][active_state_index]
-
-            # 6. Update velocities with the second half time step
+            # v(t + dt) = v(t + dt/2) + 0.5 * a(t + dt) * dt
             self.velocities += 0.5 * self.nuclei_dt * np.einsum('i,ij->ij', 1. / self.mass, self.force)
-                
-            # 7. Check for a hop and rescale momentum if necessary. This is the final action in the step.
 
-            reach_hopping = self.spin.reach_hopping_point()
-            if reach_hopping:
+            # --- Step 5: MASH Hopping (Momentum Rescaling) ---
+            if self.spin.reach_hopping_point():
+                print ("Hop detected at time {:.2f} fs".format(self.t * 0.02418884))  # Convert from atomic units to femtoseconds 
                 nac = self.fd.compute_nac(self.sim1.mo_coeff, self.sim2.mo_coeff, self.positions)
                 momentum_current = np.einsum('i,ij->ij', self.mass, self.velocities)
-                rescaled_momentum = self.spin.rescale_momentum_on_hop_v1(momentum_current, nac,  energy_final, self.mass)
+                rescaled_momentum = self.spin.rescale_momentum_on_hop_v4(momentum_current, nac, energy_final, self.mass)
                 self.velocities = np.einsum('i,ij->ij', 1. / self.mass, rescaled_momentum)
+                print(self.velocities, self.spin.current_spin, self.spin.coefficent)
 
-
-            
-            # --- Logging and Output for the completed step ---
+            # --- Logging and Preparation for next step ---
             self.t += self.nuclei_dt
-            time.append(self.t)
+            time_list.append(self.t)
             self.potentials_1.append(pot1_final)
             self.potentials_2.append(pot2_final)
             self.tdoverlap_output.append(tdoverlap)
+            
+            self.previous_mol = self.sim1.mol.copy()
+            energy_initial = energy_final.copy() # Current final becomes next initial
 
             kinetic_energy = 0.5 * np.sum(self.mass * np.linalg.norm(self.velocities, axis=1)**2)
-            
             total_energy = energy_final[active_state_index] + kinetic_energy
             self.kinetic_energies.append(kinetic_energy)
             self.total_energies.append(total_energy)
+            
             print(f"Time: {self.t:.2f}, Active State: {active_state_index}, Total Energy: {total_energy:.6f}")
 
-            step = int(self.t / self.dt)
-            if  step% self.output_interval == 0 and self.output_interval > 0:
-                self.write_xyz(f, step)
+            step_idx = int(round(self.t / self.dt))
+            if self.output_interval > 0 and step_idx % self.output_interval == 0:
+                self.write_xyz(f, step_idx)
 
 
         if self.output_interval > 0:
@@ -141,7 +146,7 @@ class MASH:
 
 
         if self.energy_filename is not None:
-            np.savez(self.energy_filename, time = time, potential_energy_1=self.potentials_1, potential_energy_2=self.potentials_2, kinetic_energy=self.kinetic_energies, overlap = self.overlap_output , tdoverlap = self.tdoverlap_output, total_energy=self.total_energies, constraint_values=self.constraint_values, spin = self.spin.S_value)
+            np.savez(self.energy_filename, time =time_list, potential_energy_1=self.potentials_1, potential_energy_2=self.potentials_2, kinetic_energy=self.kinetic_energies, overlap = self.overlap_output , tdoverlap = self.tdoverlap_output, total_energy=self.total_energies, constraint_values=self.constraint_values, spin = self.spin.S_value)
         if self.overlap_filename is not None:
             np.savez(self.overlap_filename, overlap_alpha=self.overlap_alpha, overlap_beta=self.overlap_beta, overlaps=self.overlaps)
         if self.eigenvalue_filename is not None:

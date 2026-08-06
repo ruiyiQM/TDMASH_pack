@@ -1,6 +1,6 @@
 import numpy as np
 import scipy
-from TDRHF import TDRHFSimulation
+from .TDRHF import TDRHFSimulation
 from pyscf import gto, scf
 
 class PTCN_TDRHFSimulation(TDRHFSimulation):
@@ -123,7 +123,7 @@ class PTCN_TDRHFSimulation(TDRHFSimulation):
 
 if __name__ == "__main__":
     # Test script for Nitrogen Fluoride (HF) system
-    from Verlet import run_ehrenfest_midpoint_decoupled
+    from .Verlet import run_ehrenfest_midpoint_decoupled
     from matplotlib import pyplot as plt
     mol = gto.M(atom='H 0 0 0; F 0 0 0.8', basis='6-31g')
     mf = scf.RHF(mol).run()

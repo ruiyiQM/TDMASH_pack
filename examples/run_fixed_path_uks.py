@@ -1,9 +1,9 @@
 
 from pyscf import gto,scf ,dft 
-from Ehrenfest2 import MASH
+from tdmash.Ehrenfest import FixedPathDynamics
 
 from matplotlib import pyplot as plt
-from TDUKS import TDUKSSimulation
+from tdmash.TDUKS import TDUKSSimulation
 import numpy as np
 
 
@@ -62,8 +62,8 @@ sim1 = TDUKSSimulation(mf1, dt=dt, nuclei_dt=dt,  steps=600, field_type='none', 
 sim2 = TDUKSSimulation(mf2, dt=dt, nuclei_dt=dt,  steps=600, field_type='none',  ehrenfest= False,   output_interval = -1, convergence_threshold=1e-5, mu=1.0)
 
 
-# Initialize and run the MASH simulation
-mash_simulation = MASH(
+# Initialize and run the fixed-path simulation
+simulation = FixedPathDynamics(
     sim1 =sim1,
     sim2 =sim2,
     dt=dt,
@@ -75,8 +75,8 @@ mash_simulation = MASH(
     energy_filename="NHNH_UKS_structure_1.npz",
     apply_scf= False
     )
-mash_simulation.run()
-mash_simulation.plot_results()
+simulation.run()
+simulation.plot_results()
 
 
 

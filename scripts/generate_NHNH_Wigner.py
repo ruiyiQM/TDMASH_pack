@@ -1,8 +1,7 @@
 from pyscf import gto, dft
 from pyscf.geomopt.geometric_solver import optimize
 import numpy as np
-# Make sure Wigner.py is in the same directory or in your Python path
-from Wigner import WignerSampler
+from tdmash.Wigner import WignerSampler
 
 # --- 1. System Setup and Optimization ---
 # This part is run only once.

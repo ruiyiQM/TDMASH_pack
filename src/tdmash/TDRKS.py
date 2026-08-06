@@ -2,8 +2,8 @@ from pyscf import gto, scf, dft
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
-from TDRHF import TDRHFSimulation, lowdin
-from MOM import singlet_occ_
+from .TDRHF import TDRHFSimulation, lowdin
+from .MOM import singlet_occ_
 
 def energy_tot(self, dm_total=None):
     """
@@ -89,7 +89,7 @@ def apply_scf(self):
         Returns:
             float: Total energy after SCF.
         """
-        from MOM import mom_occ_
+        from .MOM import mom_occ_
 
         if (self.mo_occ is not None) and (np.sum(self.mo_occ == 1) > 0):
             rhf = dft.RKS(self.mol, xc = self.mf.xc)

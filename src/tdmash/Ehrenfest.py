@@ -1,13 +1,13 @@
 from pyscf import gto, scf
 import numpy as np
 import matplotlib.pyplot as plt
-from TDRHF import TDRHFSimulation
+from .TDRHF import TDRHFSimulation
 
-from TDOverlap import TDOverlap
-from Spin import Spin 
-from FD import Finite_Difference_NAC
+from .TDOverlap import TDOverlap
+from .Spin import Spin 
+from .FD import Finite_Difference_NAC
 
-class MASH:
+class FixedPathDynamics:
     def __init__(self, sim1, sim2, dt, steps, update_mol_dt=None, nuclei_dt=None, energy_filename=None, overlap_filename=None, eigenvalue_filename=None, output_interval=-1, output_filename="trajectory.xyz", initial_velocity=None, mu_1=1.0, mu_2=1.0, output_consrtaint_filename=None, apply_scf=False, initial_spin=np.asarray([0,0,-1])):
 
         self.dt = dt
@@ -231,6 +231,6 @@ if __name__ == "__main__":
     sim2 = TDRHFSimulation(mf2, dt=0.5, nuclei_dt=0.5, ehrenfest=True)
 
     # Initialize and run the simulation
-    two_trajectory = MASH(sim1, sim2, dt=0.5, nuclei_dt=0.5, steps=800, output_interval=-1, mu_1=0.25, mu_2=1)
+    two_trajectory = FixedPathDynamics(sim1, sim2, dt=0.5, nuclei_dt=0.5, steps=800, output_interval=-1, mu_1=0.25, mu_2=1)
     two_trajectory.run()
     two_trajectory.plot_results()

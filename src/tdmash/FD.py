@@ -1,10 +1,10 @@
 import copy
 import numpy as np
-from TDOverlap import TDOverlap
+from .TDOverlap import TDOverlap
 import scipy
 from numpy.linalg import svd
-from TDRKS import TDRKSSimulation
-from PT2 import PTCN_TDRHFSimulation
+from .TDRKS import TDRKSSimulation
+from .PT2 import PTCN_TDRHFSimulation
 class Finite_Difference_NAC: 
     def __init__(self, sim1, sim2,  displacement=0.01, steps=1):
         
@@ -90,10 +90,10 @@ class Finite_Difference_NAC:
 
 if __name__ == "__main__":
     from pyscf import gto, dft , scf
-    from TDRKS import TDRKSSimulation
-    from MASH import MASH
-    from MOM import mom_occ_
-    from TDRHF import TDRHFSimulation
+    from .TDRKS import TDRKSSimulation
+    from .MASH import MASH
+    from .MOM import mom_occ_
+    from .TDRHF import TDRHFSimulation
     import numpy as np
 
     mol = gto.M (atom='''

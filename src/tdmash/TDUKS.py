@@ -2,7 +2,7 @@ from pyscf import gto, scf, dft
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
-from TDUHF import TDUHFSimulation
+from .TDUHF import TDUHFSimulation
 
 def energy_tot(self, dm_total=None):
     """
@@ -89,7 +89,7 @@ def apply_scf(self):
     Returns:
         float: Total energy after SCF.
     """
-    from MOM import mom_occ_
+    from .MOM import mom_occ_
     dm = self.make_rdm1(self.mo_coeff, self.mo_occ).real 
 
     rhf = self.mf.__class__(self.mol, xc=self.mf.xc)

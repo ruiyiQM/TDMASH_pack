@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+src/*.egg-info/
+build/
+dist/
 .ipynb_checkpoints/
 .venv/
 venv/

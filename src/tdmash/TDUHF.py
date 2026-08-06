@@ -2,7 +2,7 @@ from pyscf import gto, scf
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
-from TDRHF import TDRHFSimulation
+from .TDRHF import TDRHFSimulation
 
 class TDUHFSimulation(TDRHFSimulation):
     """

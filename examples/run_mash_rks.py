@@ -1,13 +1,13 @@
 
 from pyscf import gto,scf ,dft 
-from MASH2 import MASH
+from tdmash.MASH import MASH
 import numpy as np
 
 from matplotlib import pyplot as plt
-from MOM import mom_occ_
+from tdmash.MOM import mom_occ_
 
-from TDRKS import TDRKSSimulation
-from TDRHF import TDRHFSimulation
+from tdmash.TDRKS import TDRKSSimulation
+from tdmash.TDRHF import TDRHFSimulation
 mol = gto.M(atom='''
 N          -7.84651        1.28271       -0.25720
 N          -5.30782        3.39826       -0.51257

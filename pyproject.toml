@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tdmash"
+version = "0.1.0"
+description = "Energy-scaled real-time TDDFT for ab initio surface hopping dynamics"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "Ruiyi Zhou" },
+    { name = "Jeremy O. Richardson" },
+]
+keywords = [
+    "nonadiabatic dynamics",
+    "surface hopping",
+    "real-time TDDFT",
+    "MASH",
+    "PySCF",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Intended Audience :: Science/Research",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "pyscf",
+    "matplotlib",
+]
+
+[project.urls]
+Repository = "https://github.com/ruiyiQM/TDMASH_pack"
+
+[tool.setuptools.packages.find]
+where = ["src"]
