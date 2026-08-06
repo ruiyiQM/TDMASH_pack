@@ -1,12 +1,13 @@
 
 from pyscf import gto,scf ,dft 
-from MASH import MASH
+from Ehrenfest2 import MASH
 import numpy as np
 
 from matplotlib import pyplot as plt
 from MOM import mom_occ_
 
 from TDRKS import TDRKSSimulation
+from TDRHF import TDRHFSimulation
 mol = gto.M(atom='''
 N          -7.84651        1.28271       -0.25720
 N          -5.30782        3.39826       -0.51257
@@ -24,9 +25,11 @@ initial_velocity = np.array([
 
 
     # Simulation parameters
-dt = 0.25# Time step in atomic units
-steps = 20
+dt =0.2 # Time step in atomic units
+steps = 4000
 mf1 = dft.RKS(mol,xc='lda')
+#mf1 = scf.RHF(mol)
+#mf1 = dft.RKS(mol,xc='lda')
 mf1.convergence = 1e-16
 mf1.kernel()
   
@@ -34,6 +37,8 @@ mf1.kernel()
 #mf1.mo_occ[0,8] = 1
 
 
+#mf2 = dft.RKS(mol,xc='lda')
+#mf2 = scf.RHF(mol)
 mf2 = dft.RKS(mol,xc='lda')
 mf2.convergence = 1e-16
 
@@ -56,8 +61,8 @@ mf2.max_cycle = 500  # Increase the maximum number of SCF cycles
   # Start new SCF with new density matrix
 mf2.kernel()
 
-sim1 = TDRKSSimulation(mf1, dt=dt, nuclei_dt=dt,  steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=0.25, imaginary_time= True )
-sim2 = TDRKSSimulation(mf2, dt=dt, nuclei_dt=dt,  steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=0.25, imaginary_time= True )
+sim1 = TDRKSSimulation(mf1, dt=dt, nuclei_dt=dt, steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=1, propagation_method='accelerated',imaginary_time= False  ,count= True )
+sim2 = TDRKSSimulation(mf2, dt=dt, nuclei_dt=dt, steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=1, imaginary_time= False  )
 
 
 # Initialize and run the MASH simulation
@@ -67,14 +72,14 @@ mash_simulation = MASH(
     dt=dt,
     nuclei_dt=dt,
     steps=steps,
-    output_interval=1,
-    mu_1=1,
+    output_interval=10,
+    mu_1=10,
     mu_2=1,
-    energy_filename="nac_debug_mu_0d25.npz",
+    energy_filename="nac_debug_mu_10_TDKS.npz",
     initial_velocity=initial_velocity,
-    apply_scf= False,
+    apply_scf= False ,
     initial_spin=[0,0,-1]
-
+    #output_filename="trajectory_RKS.xyz"
     )
 mash_simulation.run()
 

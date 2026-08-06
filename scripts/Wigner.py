@@ -127,7 +127,7 @@ class WignerSampler:
         q_modes = np.zeros_like(self.angular_frequencies)
         p_modes = np.zeros_like(self.angular_frequencies)
 
-        print(f"\nSampling Wigner distribution at {temperature_kelvin} K...")
+        #print(f"\nSampling Wigner distribution at {temperature_kelvin} K...")
 
         # Constants for Wigner sampling
         kB_T_au = self.KB_AU_PER_K * temperature_kelvin # k_B * T in Hartree
@@ -139,10 +139,10 @@ class WignerSampler:
             # A typical threshold for a 'zero' frequency in a.u. could be around 1e-6
             # or based on the number of expected zero modes (e.g., lowest 6).
             # We'll use a pragmatic approach: if omega_i is very small, treat as zero.
-            if omega_i < 1e-5:  # Threshold for near-zero frequency (in atomic units)
+            if omega_i < 1e-4:  # Threshold for near-zero frequency (in atomic units)
                 q_modes[i] = 0.0
                 p_modes[i] = 0.0
-                # print(f"  Mode {i}: Skipping Wigner sampling for near-zero frequency ({omega_i:.2e} a.u.).")
+                print(f"  Mode {i}: Skipping Wigner sampling for near-zero frequency ({omega_i:.2e} a.u.).")
                 continue
 
             # Calculate beta_i = hbar * omega_i / (2 * k_B * T)
@@ -188,7 +188,7 @@ class WignerSampler:
         # Calculate Cartesian velocities
         velocities_cartesian = p_cartesian / self.masses_3n
 
-        print("Wigner sampling complete.")
+        #print("Wigner sampling complete.")
         return new_structure_cartesian, velocities_cartesian
 
 # Example Usage:

@@ -10,10 +10,10 @@ print("Setting up the molecule...")
 # Using the optimized geometry from your previous script as the starting point
 # is a good practice, but we'll re-optimize here to keep the script self-contained.
 mol = gto.M(atom='''
-N 0 0 0
-N 0 0 1.25
-H 0 1 0
-H 0 -1 1.25
+N         -0.00000        0.14775       -0.08610
+N         -0.00000       -0.14775        1.33610
+H          0.00000        1.16727       -0.20617
+H          0.00000       -1.16727        1.45617
 ''', basis='6-31g*')
 
 
@@ -21,14 +21,14 @@ mol.build()
 
 print("Optimizing geometry...")
 # Use a DFT functional to optimize the molecule
-mf = dft.RKS(mol, xc='m06l')
+mf = dft.RKS(mol, xc='pbe')
 mol_eq = optimize(mf, maxsteps=100)
 print("Geometry optimization complete.")
 
 # --- 2. Hessian Calculation ---
 # The Hessian is calculated at the equilibrium geometry.
 print("Calculating Hessian matrix...")
-mf1 = dft.RKS(mol_eq, xc='m06l')
+mf1 = dft.RKS(mol_eq, xc='pbe')
 mf1.kernel()
 # .Hessian() returns a Hessian object, .kernel() computes the Hessian matrix
 h = mf1.Hessian().kernel()
@@ -36,7 +36,7 @@ h = mf1.Hessian().kernel()
 # We need to reshape it to a (3*natm, 3*natm) matrix.
 hessian = h.transpose(0, 2, 1, 3).reshape(mol.natm * 3, mol.natm * 3)
 print("Hessian calculation complete.")
-
+print (hessian)
 # --- 3. Wigner Sampler Initialization ---
 # Convert masses from amu to atomic units (electron mass)
 # 1 amu = 1822.88839 m_e
@@ -58,14 +58,13 @@ print(f"\nGenerating {num_structures} structures at {temperature_k} K...")
 for i in range(num_structures):
     # Sample new coordinates and velocities from the Wigner distribution
     new_coords, new_velocities = sampler.sample_wigner(temperature_k)
-    print (new_coords)
     # Reshape to (natm, 3) and store
     all_coords.append(new_coords.reshape(mol.natm, 3))
     all_velocities.append(new_velocities.reshape(mol.natm, 3))
     
     # Print progress
-    if (i + 1) % 10 == 0:
-        print(f"  ... generated structure {i + 1}/{num_structures}")
+    #if (i + 1) % 10 == 0:
+       #print(f"  ... generated structure {i + 1}/{num_structures}")
 
 print("Generation complete.")
 

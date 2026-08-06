@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import scipy
 from DIIS import DIIS
 from Anderson import AndersonAcceleration
-
+from MOM import singlet_occ_
 
 def lowdin(s):
     """
@@ -25,6 +25,8 @@ def lowdin(s):
         np.dot(v[:, idx] * sqrt_e, v[:, idx].conj().T),
         np.dot(v[:, idx] * 1.0/e[idx], v[:, idx].conj().T),
     )
+
+
 
 def linear_interpolated_crank_nicolson_accelerated(self, F_current, E_t, dt=None, num_substeps=5):
         """
@@ -163,7 +165,8 @@ def predictor_corrector_accelerated(self, F_current, E_t, dt=None):
             # Compare current MOs with MOs from the previous iteration
             error_mo = mo_coeff_next - mo_coeff_iter_prev
             mo_diff = np.max(np.abs(error_mo))
-            print (f" P-C iteration {iter_count}, max MO diff: {mo_diff:.2e}")
+            if (self.count and iter_count > 0):
+                print (f" P-C iteration {iter_count}, max MO diff: {mo_diff:.2e}")
             # Check convergence (skip first iter to allow predictor to correct once)
             if iter_count > 0 and mo_diff < self.convergence_threshold:
                 # Update system state
@@ -496,30 +499,18 @@ def apply_scf(self):
         """
         from MOM import mom_occ_
 
-        dm = self.make_rdm1(self.mo_coeff, self.mo_occ).real
-        setocc = np.zeros((2, self.mo_coeff.shape[1]), dtype=np.float64)
-
-        setocc[0, self.mo_occ == 2] = 1.0
-        setocc[1, self.mo_occ == 2] = 1.0
-        open_index = np.where(self.mo_occ == 1)[0]
-        if (len(open_index)>0):
-            setocc[0, open_index[0]] = 1.0
-            setocc[1, open_index[1]] = 1.0
-
-        rhf = self.mf.__class__(self.mol, xc = self.mf.xc )
+        if (self.mo_occ is not None) and (np.sum(self.mo_occ == 1) > 0):
+            rhf = self.mf.__class__(self.mol)
+            rhf = singlet_occ_(rhf)
+        else:
+            rhf = self.mf.__class__(self.mol ).newton()
         rhf.verbose = 4
-        rhf= mom_occ_(rhf, occorb=self.mo_coeff, setocc=setocc)
+
         rhf.kernel()
-        #rhf.max_cycle = 5
-        #rhf.scf(dm)
-        if (rhf.converged == False):
-            #self.apply_scf_v2()
-            rhf= rhf.newton()
-            rhf.kernel()
 
         self.mf = rhf
         self.initialize_molecular_orbitals(n_virtual=0)
-        return rhf.kernel()
+        return self.energy_tot()
 
 def apply_scf_v2(self):
 
@@ -838,7 +829,7 @@ class TDRHFSimulation:
     def __init__(self, mf, dt, steps=0, E0=0, field_type='none', omega=0, tau=0, t0=0, propagation_method='predictor_corrector',
                  field_direction='z', ehrenfest=False, nuclei_dt=None, initial_velocity=None, update_mol_dt=None,
                  energy_filename=None, output_interval=-1, output_filename="trajectory_rhf.xyz", mu=1.0,
-                 n_virtual=0, convergence_threshold=1e-6, max_iterations=40, imaginary_time=False, imaginary_time_dt= None ):
+                 n_virtual=0, convergence_threshold=1e-6, max_iterations=40, imaginary_time=False, imaginary_time_dt= None , count= False):
         """
         Initialize the Time-Dependent Restricted Hartree-Fock Simulation.
         """
@@ -882,6 +873,8 @@ class TDRHFSimulation:
         self.dm_last = 0
         self.veff_last = 0
         self.with_df = hasattr(mf, 'with_df')
+
+        self.count = count
 
     def initialize_molecular_orbitals(self, n_virtual):
         """Initializes molecular orbitals and occupation numbers for RHF."""
@@ -968,6 +961,8 @@ class TDRHFSimulation:
         elif self.propagation_method == 'linear_interpolated_cn_accelerated':
         # You can tune num_substeps here (e.g., 5 or 10)
             self.linear_interpolated_crank_nicolson_accelerated(F_current, E_t, dt=dt, num_substeps=10)
+        elif self.propagation_method == 'pt_cn_lowdin':
+            self.pt_cn_lowdin_propagation(F_current, E_t, dt=dt)
         else:
             raise ValueError(f"Unknown propagation method: {self.propagation_method}")
 
@@ -1004,12 +999,12 @@ class TDRHFSimulation:
             B_corr = self.overlap - 0.5j * dt * F_average_scaled
             mo_coeff_corrected = np.linalg.solve(A_corr, B_corr @ self.mo_coeff)
 
-            if iter_count > 0:
-                mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict_iter))
+            mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict_iter))
+            if self.count:
                 print(f"  Iteration: {iter_count}, MO diff: {mo_diff:.2e}")
-                if mo_diff < self.convergence_threshold:
-                    mo_coeff_predict_iter = mo_coeff_corrected
-                    break
+            if mo_diff < self.convergence_threshold:
+                mo_coeff_predict_iter = mo_coeff_corrected
+                break
             mo_coeff_predict_iter = mo_coeff_corrected
             F_t_scaled = F_predict_scaled.copy()
             if iter_count == self.max_iterations - 1:
@@ -1067,6 +1062,7 @@ class TDRHFSimulation:
 
         atom_coords_str = [f"{self.mol.atom_symbol(i)} {p[0]} {p[1]} {p[2]}" for i, p in enumerate(positions)]
         
+
         new_mol = gto.M(atom="\n".join(atom_coords_str),
                         basis=self.mol.basis,
                         unit="Bohr",
@@ -1077,6 +1073,7 @@ class TDRHFSimulation:
             new_mol.ecp = self.mol.ecp
         new_mol.build()
         self.mol = new_mol
+
         #if (self.mo_coeff.shape[0] == 0):
         self.mo_coeff = self.overlap_half @ self.mo_coeff
 
@@ -1085,7 +1082,7 @@ class TDRHFSimulation:
         else:
             self.mf = scf.RHF(self.mol).density_fit()
         self.update_overlap()
-
+        #self.mo_coeff = self.orthogonalize_mo_coeff(self.mo_coeff)
         self.mo_coeff = self.overlap_half_inv @ self.mo_coeff
 
         # MODIFICATION: Recalculate and cache the core Hamiltonian for the new geometry
@@ -1301,34 +1298,33 @@ class TDRHFSimulation:
         residue -= residue.conj().T
         return np.linalg.norm(residue)
 
-    def update_electronic_wavefunction(self, mu = None, calculate_force = False, dt= None, apply_scf=False, real_time = True):
-        if (mu is None):
-            mu = self.mu
-        self.update_mu(mu)
-        if (dt is None): dt = self.dt
-        if (real_time):
+    def update_electronic_wavefunction(self, mu = None, calculate_force = False, dt= None, apply_scf=False):
+        if (apply_scf ):
+            potential_energy_next_step = self.apply_scf()
+        else:
+            if (mu is None):
+                mu = self.mu
+            self.update_mu(mu)
+            if (dt is None): dt = self.dt
             dm_current= self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
             E_t_current = self.electric_field(self.t)
             F_current_for_prop = self.get_fock_matrix(dm_current, E_t_current)
             self.propagate_electrons(F_current_for_prop, E_t_current, dt= dt )
-            #self.mo_coeff= self.orthogonalize_mo_coeff(self.mo_coeff)
+                #self.mo_coeff= self.orthogonalize_mo_coeff(self.mo_coeff)
 
-        if (self.imaginary_time):
+            if (self.imaginary_time):
+                dm_next_step = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
+                E_t_current = 0.0
+                F_next_step = self.get_fock_matrix(dm_next_step, E_t_current)
+                self.F = F_next_step
+                self.imaginary_time_propagation(F_next_step, E_t_current)
+
             dm_next_step = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
-            E_t_current = 0.0
-            F_next_step = self.get_fock_matrix(dm_next_step, E_t_current)
+            F_next_step = self.get_fock_matrix(dm_next_step)
+            self.prev_F =  self.overlap_half_inv @ F_next_step @ self.overlap_half_inv
             self.F = F_next_step
-            self.imaginary_time_propagation(F_next_step, E_t_current)
-
-        dm_next_step = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
-        F_next_step = self.get_fock_matrix(dm_next_step)
-        self.prev_F =  self.overlap_half_inv @ F_next_step @ self.overlap_half_inv
-        self.F = F_next_step
-        self.dm_total = dm_next_step
-        if (apply_scf):
-            potential_energy_next_step = self.apply_scf()
-        else:
-            potential_energy_next_step = self.energy_tot(dm_total=dm_next_step)
+            self.dm_total = dm_next_step
+            potential_energy_next_step = self.energy_tot(dm_total=dm_next_step)  
         if (not calculate_force):
             return potential_energy_next_step
         else:
@@ -1394,6 +1390,8 @@ class TDRHFSimulation:
 
     predictor_corrector_accelerated = predictor_corrector_accelerated
     linear_interpolated_crank_nicolson_accelerated = linear_interpolated_crank_nicolson_accelerated
+
+
 
 if __name__ == "__main__":
     mol = gto.M(

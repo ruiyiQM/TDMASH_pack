@@ -107,7 +107,7 @@ class TDUHFSimulation(TDRHFSimulation):
         if dt is None: dt = self.dt
 
         # Predictor step
-        local_F_scaled = F_current / self.mu
+        local_F_scaled = F_current * self.mu
         F_t_scaled = local_F_scaled.copy()
 
         # Alpha propagation matrices
@@ -127,7 +127,7 @@ class TDUHFSimulation(TDRHFSimulation):
             E_t_plus_dt = self.electric_field(self.t + self.dt)
             F_predict_raw = self.get_fock_matrix(dm_predict, E_t_plus_dt)
             self.F = F_predict_raw.copy()
-            F_predict_scaled = F_predict_raw / self.mu
+            F_predict_scaled = F_predict_raw * self.mu
             
             F_average_scaled = 0.5 * (local_F_scaled + F_predict_scaled)
 
@@ -141,12 +141,12 @@ class TDUHFSimulation(TDRHFSimulation):
             mo_coeff_corrected[0] = np.linalg.solve(A_corr_alpha, B_corr_alpha @ self.mo_coeff[0])
             mo_coeff_corrected[1] = np.linalg.solve(A_corr_beta, B_corr_beta @ self.mo_coeff[1])
 
-            if iter_count > 0:
-                 mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict_iter))
-                 print(f"  Iteration: {iter_count}, MO diff: {mo_diff:.2e}")
-                 if mo_diff < self.convergence_threshold:
-                    mo_coeff_predict_iter = mo_coeff_corrected
-                    break
+            #if iter_count > 0:
+            mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict_iter))
+            print(f"  Iteration: {iter_count}, MO diff: {mo_diff:.2e}")
+            if mo_diff < self.convergence_threshold:
+                mo_coeff_predict_iter = mo_coeff_corrected
+                break
             
             mo_coeff_predict_iter = mo_coeff_corrected.copy()
             # F_t_scaled = F_predict_scaled.copy() # Standard P-C doesn't usually update F(t), kept as commented in original TDUHF
@@ -358,7 +358,7 @@ if __name__ == "__main__":
     mol = gto.M(
         atom='''
         H 0.000000 0.000000 0.000000
-        H 0.000000 0.000000 1.5
+        F 0.000000 0.000000 1.5
         ''',
         basis='6-31g',
         spin=0 # Explicitly specify spin if needed, UHF can still run on singlet
@@ -370,7 +370,7 @@ if __name__ == "__main__":
     mf.kernel()
 
     # Run TDUHF simulation
-    simulation_uhf = TDUHFSimulation(mf, dt=0.05, nuclei_dt=0.05, steps=200, 
+    simulation_uhf = TDUHFSimulation(mf, dt=0.5, nuclei_dt=0.5, steps=200, 
                                      field_type='none', ehrenfest=True, 
                                      output_interval=10, convergence_threshold=1e-8)
     simulation_uhf.run()

@@ -112,7 +112,7 @@ class Spin:
         self.coefficent = bloch_to_coeffs(initial_spin)
         self.S_value = [] # S value for each step
 
-        print (self.coefficent)
+        #print (self.coefficent)
         
     def determine_active_state_index(self):
         """
@@ -127,8 +127,11 @@ class Spin:
         
         H_last_step = np.diag(energy_last_step)
         H_this_step = np.diag(energy_this_step)
+
+        H_last_step = H_last_step - np.eye(2) * H_last_step[0,0]
+        H_this_step = H_this_step - np.eye(2) * H_this_step[0,0]
         
-        
+        print (H_last_step, H_this_step)
         
         self.coefficent = scipy.linalg.expm(-1j * dt/2 * H_last_step) @ self.coefficent
         U,s,Vh = np.linalg.svd(overlap)
@@ -137,9 +140,10 @@ class Spin:
         self.coefficent = scipy.linalg.expm(-1j * dt/2 * H_this_step) @ self.coefficent
         #self.coefficent = scipy.linalg.expm(-1j * dt/2 * (H_last_step + H_this_step) - T ) @ self.coefficent
         #print (self.coefficent)
-        self.S_value.append(self.current_spin)
+        
         self.current_spin = coeffs_to_bloch(self.coefficent)
-        #print (self.current_spin)
+        self.S_value.append(self.current_spin.copy())
+        print (self.current_spin)
 
     def reach_hopping_point(self):
         if (len(self.S_value) < 2):
@@ -147,7 +151,7 @@ class Spin:
             return False
 
         else:
-            return (self.S_value[-1][2]  * self.S_value[-2][2] )< 0
+            return ((self.S_value[-1][2]  * self.S_value[-2][2] )< 0)
 
     def rescale_momentum_on_hop_v0(self, p_current,  energy_this_step, mass): 
         """
@@ -163,7 +167,8 @@ class Spin:
         if (E_kin < delta_V):
             # Hop is rejected
             # hop_rejected = True
-            self.current_spin = np.array([1,1,-1])* self.current_spin
+            self.current_spin[2] = -1* self.current_spin[2]
+            self.coefficent = bloch_to_coeffs(self.current_spin).copy()
             self.S_value[-1] = self.current_spin.copy()
 
             return -p_current
@@ -199,3 +204,171 @@ class Spin:
             p_tilde_cuerrent = p_tilde_cuerrent + (np.sqrt((E_kin - delta_V)/ E_kin ) -1) * rescaled_velocity_norm / rescaled_nac_norm * nac_tilde
             p_out = np.einsum("i,ij->ij", np.sqrt(mass), p_tilde_cuerrent)
             return p_out 
+
+    def rescale_momentum_on_hop_v2(self, p_current, nac_vec_dirt,  energy_this_step, mass):
+
+
+        V_initial_hop = energy_this_step[0] if self.S_value[-2][2]> 0 else energy_this_step[1]
+        V_target_hop = energy_this_step[0] if self.S_value[-1][2]> 0 else energy_this_step[1]
+        delta_V = V_target_hop - V_initial_hop
+        print ("Delta V:", delta_V)
+        p_tilde_cuerrent = np.einsum("i,ij->ij", 1./np.sqrt(mass), p_current   ) 
+        v_current = np.einsum("i,ij->ij", 1./mass, p_current   ) 
+        #nac_vec_real 
+        nac_tilde = np.einsum("i,ij->ij", 1./np.sqrt(mass),  nac_vec_dirt.real   ) 
+
+        rescaled_velocity_norm = np.dot(p_tilde_cuerrent.flatten(), nac_vec_dirt.real.flatten())
+        massless_rescaled_velocity_norm = np.dot(v_current.flatten(), nac_vec_dirt.real.flatten())
+        print ("Rescaled velocity norm:", rescaled_velocity_norm )
+        E_kin = 0.5 * np.abs( rescaled_velocity_norm )**2
+
+        if (E_kin < delta_V):
+            # Hop is rejected
+            # hop_rejected = True
+            self.current_spin[2] = -1* self.current_spin[2]
+            self.coefficent = bloch_to_coeffs(self.current_spin).copy()
+            self.S_value[-1] = self.current_spin.copy()
+            p_tilde_cuerrent = p_tilde_cuerrent - 2 * massless_rescaled_velocity_norm * nac_tilde
+            p_out = np.einsum("i,ij->ij", np.sqrt(mass), p_tilde_cuerrent)
+            return p_out
+        else:
+            # Hop is accepted
+            p_tilde_cuerrent= p_tilde_cuerrent + (np.sqrt((E_kin - delta_V)/ E_kin ) -1)  * massless_rescaled_velocity_norm * nac_vec_dirt.real
+            p_out = np.einsum("i,ij->ij", np.sqrt(mass), p_tilde_cuerrent)
+            return p_out 
+
+    def rescale_momentum_on_hop_v3(self, p_current, nac_vec, energy_this_step, mass):
+        """
+        Implements momentum rescaling for MASH (unSMASH) dynamics.
+        Based on Equations (13a)-(13g) from the supplementary material.
+        
+        Args:
+            p_current: Current momentum array (N_atoms, 3)
+            nac_vec: Non-adiabatic coupling vector (NACV) (N_atoms, 3)
+            energy_this_step: Adiabatic energies [V0, V1]
+            mass: Array of atomic masses (N_atoms,)
+        """
+        # Identify the initial state (n) and target state (j)
+        # In MASH, Sz > 0 corresponds to being on state n [cite: 497]
+        if self.S_value[-2][2] > 0:
+            n, j = 0, 1
+        else:
+            n, j = 1, 0
+            
+        # delta_V_nj = V_n - V_j as used in Equation (13a) [cite: 566, 569]
+        delta_V_nj = energy_this_step[n] - energy_this_step[j]
+        # The energy gap to overcome for a successful hop is V_j - V_n
+        energy_gap_to_overcome = -delta_V_nj 
+
+        # 1. Mass-weighting the vectors 
+        # p_tilde = p / sqrt(m)
+        p_tilde= np.einsum("i,ij->ij", 1./np.sqrt(mass), p_current   ) 
+        #p_tilde = p_current / np.sqrt(mass[:, np.newaxis])
+        # d_tilde = d / sqrt(m)
+        d_tilde = np.einsum("i,ij->ij", 1./np.sqrt(mass), nac_vec.real   )
+        #d_tilde = nac_vec.real / np.sqrt(mass[:, np.newaxis])
+
+        # 2. Calculate projections along the NACV 
+        dot_pd = np.sum(p_tilde * d_tilde)
+        dot_dd = np.sum(d_tilde * d_tilde)
+        
+        # Guard against zero coupling
+        if dot_dd < 1e-12:
+            return p_current
+
+        # 3. Calculate kinetic energy along the derivative coupling vector 
+        # E_kin_d = 0.5 * (p_tilde · d_tilde)^2 / (d_tilde · d_tilde)
+        E_kin_d = 0.5 * (dot_pd**2) / dot_dd
+
+        # 4. Check for frustrated vs successful hop [cite: 564, 582]
+        if E_kin_d < energy_gap_to_overcome:
+            # --- Frustrated Hop (Rejected) ---
+            # Reverse mass-weighted momentum along the derivative coupling vector 
+            p_tilde_new = p_tilde - 2 * d_tilde * (dot_pd / dot_dd)
+            
+            # Correct the electronic variables: Flip Sz back [cite: 590]
+            # Solving EOM shows Sz never changes sign at a frustrated hop [cite: 587]
+            self.current_spin[2] = -self.current_spin[2]
+            self.coefficent = bloch_to_coeffs(self.current_spin).copy()
+            self.S_value[-1] = self.current_spin.copy()
+            # Revert to standard momentum: p = p_tilde * sqrt(m)
+            print ("Frustrated hop detected. Reversing momentum along NACV and flipping spin. E_kin_d: ", E_kin_d, " | Energy gap to overcome: ", energy_gap_to_overcome)
+            return np.einsum("i,ij->ij", np.sqrt(mass), p_tilde_new)
+        else:
+            # --- Successful Hop ---
+            # Rescale mass-weighted momentum along the NACV [cite: 565, 566]
+            rescale_factor = np.sqrt((E_kin_d + delta_V_nj) / E_kin_d) - 1.0
+            p_tilde_new = p_tilde + rescale_factor * d_tilde * (dot_pd / dot_dd)
+            
+            # Active surface is updated (handled by index detection in the main loop) [cite: 568]
+            print ("Successful hop detected. Rescaling momentum along NACV. E_kin_d: ", E_kin_d, " | Energy gap to overcome: ", energy_gap_to_overcome)
+            # Revert to standard momentum: p = p_tilde * sqrt(m)
+            return np.einsum("i,ij->ij", np.sqrt(mass), p_tilde_new)
+        
+    def rescale_momentum_on_hop_v4(self, p_current, nac_vec, energy_this_step, mass):
+        """
+        Implements momentum rescaling for MASH (unSMASH) dynamics.
+        Based on Equations (13a)-(13g) from the supplementary material.
+        
+        Args:
+            p_current: Current momentum array (N_atoms, 3)
+            nac_vec: Non-adiabatic coupling vector (NACV) (N_atoms, 3)
+            energy_this_step: Adiabatic energies [V0, V1]
+            mass: Array of atomic masses (N_atoms,)
+        """
+        # Identify the initial state (n) and target state (j)
+        # In MASH, Sz > 0 corresponds to being on state n [cite: 497]
+        if self.S_value[-2][2] > 0:
+            n, j = 0, 1
+        else:
+            n, j = 1, 0
+            
+        # delta_V_nj = V_n - V_j as used in Equation (13a) [cite: 566, 569]
+        delta_V_nj = energy_this_step[n] - energy_this_step[j]
+        # The energy gap to overcome for a successful hop is V_j - V_n
+        energy_gap_to_overcome = -delta_V_nj 
+
+        # 1. Mass-weighting the vectors 
+        # p_tilde = p / sqrt(m)
+        p_tilde= np.einsum("i,ij->ij", 1./np.sqrt(mass), p_current   ) 
+        #p_tilde = p_current / np.sqrt(mass[:, np.newaxis])
+        # d_tilde = d / sqrt(m)
+        d_tilde = np.einsum("i,ij->ij", 1./np.sqrt(mass), nac_vec.real   )
+        #d_tilde = nac_vec.real / np.sqrt(mass[:, np.newaxis])
+
+        # 2. Calculate projections along the NACV 
+        dot_pd = np.sum(p_tilde * d_tilde)
+        dot_dd = np.sum(d_tilde * d_tilde)
+        
+        # Guard against zero coupling
+        if dot_dd < 1e-12:
+            return p_current
+
+        # 3. Calculate kinetic energy along the derivative coupling vector 
+        # E_kin_d = 0.5 * (p_tilde · d_tilde)^2 / (d_tilde · d_tilde)
+        E_kin_d = 0.5 * (dot_pd**2) / dot_dd
+
+        # 4. Check for frustrated vs successful hop [cite: 564, 582]
+        if E_kin_d < energy_gap_to_overcome:
+            # --- Frustrated Hop (Rejected) ---
+            # Reverse mass-weighted momentum along the derivative coupling vector 
+            #p_tilde_new = p_tilde - 2 * d_tilde * (dot_pd / dot_dd)
+            
+            # Correct the electronic variables: Flip Sz back [cite: 590]
+            # Solving EOM shows Sz never changes sign at a frustrated hop [cite: 587]
+            self.current_spin = -self.current_spin
+            self.coefficent = bloch_to_coeffs(self.current_spin).copy()
+            self.S_value[-1] = self.current_spin.copy()
+            # Revert to standard momentum: p = p_tilde * sqrt(m)
+            print ("Frustrated hop detected. Reversing momentum along NACV and flipping spin. E_kin_d: ", E_kin_d, " | Energy gap to overcome: ", energy_gap_to_overcome)
+            return np.einsum("i,ij->ij", np.sqrt(mass), p_tilde)
+        else:
+            # --- Successful Hop ---
+            # Rescale mass-weighted momentum along the NACV [cite: 565, 566]
+            rescale_factor = np.sqrt((E_kin_d + delta_V_nj) / E_kin_d) - 1.0
+            p_tilde_new = p_tilde + rescale_factor * d_tilde * (dot_pd / dot_dd)
+            
+            # Active surface is updated (handled by index detection in the main loop) [cite: 568]
+            print ("Successful hop detected. Rescaling momentum along NACV. E_kin_d: ", E_kin_d, " | Energy gap to overcome: ", energy_gap_to_overcome)
+            # Revert to standard momentum: p = p_tilde * sqrt(m)
+            return np.einsum("i,ij->ij", np.sqrt(mass), p_tilde_new)

@@ -122,7 +122,7 @@ if __name__ == "__main__":
     mol = gto.M(
         atom='''
         H 0.000000 0.000000 0.000000
-        F 0.000000 0.000000 1.500000
+        F 0.000000 0.000000 0.800000
         ''',
         basis='6-31g',
         unit="Bohr"
@@ -137,8 +137,8 @@ if __name__ == "__main__":
     mf_grad.kernel()
 
 
-    mf.mo_occ[0,4] = 0
-    mf.mo_occ[0,5] = 1
+    #mf.mo_occ[0,4] = 0
+    #mf.mo_occ[0,5] = 1
 
 
 

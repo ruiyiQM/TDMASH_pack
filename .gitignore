@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Simulation output
+*.npz
+*.chk
+*.out
+*.log
+*_trajectory.xyz
+simulation_batch_*/
+
+# Keep the sampled initial conditions, which are inputs rather than output
+!initial_conditions/*.npy
+!initial_conditions/*.xyz
+
+# OS
+.DS_Store

@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy
 from TDRHF import TDRHFSimulation, lowdin
+from MOM import singlet_occ_
 
 def energy_tot(self, dm_total=None):
     """
@@ -80,7 +81,28 @@ def update_mol(self, positions=None):
     # For robust Ehrenfest, one might need to carry over more from the original mf setup
     # or re-converge SCF if that's part of the model (not typical for pure Ehrenfest propagation).
     # For this code, we assume propagation relies on the MOs, and mf is mainly for integrals.
+def apply_scf(self):
 
+        """
+        Apply the SCF procedure to the mean-field object.
+
+        Returns:
+            float: Total energy after SCF.
+        """
+        from MOM import mom_occ_
+
+        if (self.mo_occ is not None) and (np.sum(self.mo_occ == 1) > 0):
+            rhf = dft.RKS(self.mol, xc = self.mf.xc)
+            rhf = singlet_occ_(rhf)
+        else:
+            rhf = dft.RKS(self.mol, xc = self.mf.xc).newton()
+        rhf.verbose = 4
+
+        rhf.kernel()
+
+        self.mf = rhf
+        self.initialize_molecular_orbitals(n_virtual=0)
+        return self.energy_tot()
     
 
 class TDRKSSimulation(TDRHFSimulation):
@@ -89,6 +111,7 @@ class TDRKSSimulation(TDRHFSimulation):
 
     energy_tot = energy_tot
     update_mol = update_mol
+    apply_scf = apply_scf
 
     
     
