@@ -716,7 +716,7 @@ if __name__ == "__main__":
         #ecp = 'bfd-pp',
     )
     
-    # 2. 运行基态 SCF
+    # 2. Run the ground-state SCF
     mf = scf.RHF(mol)
     mf.kernel()
     #mf.mo_occ[4]=0
