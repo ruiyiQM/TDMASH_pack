@@ -130,8 +130,9 @@ Bloch-sphere sampling of the initial mapping variables.
 
 ## License
 
-<!-- TODO: choose a license before publishing (e.g. MIT or Apache-2.0) and add
-     the corresponding LICENSE file. -->
+Released under the MIT License; see [`LICENSE`](LICENSE). The permissive terms
+are deliberate: they allow the code to be incorporated into other packages,
+including ones that are not themselves openly licensed.
 
 ## Citation
 
