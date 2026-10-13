@@ -72,7 +72,9 @@ class Finite_Difference_NAC:
                 self.sim2_backward.update_mol(displaced_positions_minus)
 
                 tdoverlap_class = TDOverlap(self.sim1_backward, self.sim2_backward)
-                tdoverlap_class.update_mo_coeff(self.sim1_forward, self.sim2_forward)
+                # Cross-geometry AO overlap S(R - dR, R + dR), as used for the ensembles.
+                tdoverlap_class.update_mo_coeff(self.sim1_forward, self.sim2_forward,
+                                                previous_mol=self.sim1_backward.mol)
                 tdoverlap = tdoverlap_class.update_overlap()
                 #print (tdoverlap)
                 #print (np.angle(tdoverlap[0,0],deg=True), np.angle(tdoverlap[0,1],deg=True), np.angle(tdoverlap[1,0],deg=True), np.angle(tdoverlap[1,1],deg=True))
