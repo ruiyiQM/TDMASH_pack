@@ -61,7 +61,7 @@ class FixedPathDynamics:
         self.tdoverlap_output = []
 
         self.apply_scf = apply_scf
-        self.previous_mol = None
+        self.previous_mol = sim1.mol.copy()
         self.density_matrix_output = []
         self.overlap_matrix_output = []
         self.apply_scf = apply_scf
@@ -79,14 +79,13 @@ class FixedPathDynamics:
         # Using dt=0.0 to calculate forces without propagating electrons.
         _, self.force = self.sim2.update_electronic_wavefunction(calculate_force=True, dt=0.0, apply_scf= self.apply_scf)
 
-        stop_time = self.dt * self.steps  # Total simulation time
         self.time = []
 
         print(f"Starting midpoint-decoupled Ehrenfest/MASH dynamics.")
         print(f"Nuclear dt: {self.nuclei_dt}, Electronic dt: {self.dt}")
         energy_initial = np.asarray([self.sim1.energy_tot(), self.sim2.energy_tot()])
         
-        while self.t < stop_time:
+        for current_step in range(1, self.steps + 1):
             # Store potential energy at start of step (t) for spin propagation
             #self.potentials_1.append(self.sim1.energy_tot())
             #self.potentials_2.append(self.sim2.energy_tot())
@@ -128,7 +127,6 @@ class FixedPathDynamics:
 
             # --- Step 8: Spin Propagation ---
             # Use current step count for output interval
-            current_step = int(np.round(self.t / self.nuclei_dt))
             # Propagate spin over the full time step [t, t + dt_N]
             #if self.output_interval > 0 and current_step % self.output_interval == 0:
             self.tdoverlap_class.update_mo_coeff(self.sim1, self.sim2, previous_mol=self.previous_mol)
@@ -145,7 +143,7 @@ class FixedPathDynamics:
             self.velocities += 0.5 * self.nuclei_dt * np.einsum('i,ij->ij', 1. / self.mass, self.force)
             
             # --- Logging and Output ---
-            self.t += self.nuclei_dt
+            self.t = current_step * self.nuclei_dt
             self.time.append(self.t)
             self.potentials_1.append(pot1_final)
             self.potentials_2.append(pot2_final)

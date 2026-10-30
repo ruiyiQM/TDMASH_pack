@@ -62,7 +62,7 @@ mf2.max_cycle = 500  # Increase the maximum number of SCF cycles
 mf2.kernel()
 
 sim1 = TDRKSSimulation(mf1, dt=dt, nuclei_dt=dt, steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=80, propagation_method='accelerated',imaginary_time= False  ,count= True )
-sim2 = TDRKSSimulation(mf2, dt=dt, nuclei_dt=dt, steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=1, imaginary_time= False  )
+sim2 = TDRKSSimulation(mf2, dt=dt, nuclei_dt=dt, steps=600, field_type='none',  ehrenfest= False,  output_interval = -1, convergence_threshold=1e-5, mu=1, imaginary_time= False, propagation_method='accelerated')
 
 
 # Initialize and run the MASH simulation

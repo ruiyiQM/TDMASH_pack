@@ -41,7 +41,8 @@ def predictor_corrector_accelerated(self, F_current, E_t, dt=None):
         F_guess_next = local_F_start.copy()
 
         # Initialize Accelerator
-        accelerator = AndersonAcceleration(history_size=6, regularization=1e-5)
+        # Fock residuals are small for displaced geometries; retain their mixing information.
+        accelerator = AndersonAcceleration(history_size=6, regularization=1e-10)
         
         # Initialize previous iteration coefficients for convergence check
         # Initially set to current time step coefficients
@@ -159,7 +160,7 @@ def apply_scf_v2(self):
 
 
 class TDRHFSimulation:
-    def __init__(self, mf, dt, steps=0, E0=0, field_type='none', omega=0, tau=0, t0=0, propagation_method='predictor_corrector',
+    def __init__(self, mf, dt, steps=0, E0=0, field_type='none', omega=0, tau=0, t0=0, propagation_method='accelerated',
                  field_direction='z', ehrenfest=False, nuclei_dt=None, initial_velocity=None, update_mol_dt=None,
                  energy_filename=None, output_interval=-1, output_filename="trajectory_rhf.xyz", mu=1.0,
                  n_virtual=0, convergence_threshold=1e-6, max_iterations=40, imaginary_time=False, imaginary_time_dt= None , count= False):

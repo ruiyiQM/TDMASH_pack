@@ -305,7 +305,7 @@ class Spin:
             # Revert to standard momentum: p = p_tilde * sqrt(m)
             return np.einsum("i,ij->ij", np.sqrt(mass), p_tilde_new)
         
-    def rescale_momentum_on_hop_v4(self, p_current, nac_vec, energy_this_step, mass):
+    def rescale_momentum_on_hop_v4(self, p_current, nac_vec, energy_this_step, mass, initial_state=None):
         """
         Implements momentum rescaling for MASH (unSMASH) dynamics.
         Based on Equations (13a)-(13g) from the supplementary material.
@@ -318,10 +318,11 @@ class Spin:
         """
         # Identify the initial state (n) and target state (j)
         # In MASH, Sz > 0 corresponds to being on state n [cite: 497]
-        if self.S_value[-2][2] > 0:
-            n, j = 0, 1
-        else:
-            n, j = 1, 0
+        # initial_state: active state at the start of the step (Algorithm 2);
+        # if not given, it is inferred from the sign of S_z at the previous step.
+        if initial_state is None:
+            initial_state = 0 if self.S_value[-2][2] > 0 else 1
+        n, j = (0, 1) if initial_state == 0 else (1, 0)
             
         # delta_V_nj = V_n - V_j as used in Equation (13a) [cite: 566, 569]
         delta_V_nj = energy_this_step[n] - energy_this_step[j]
@@ -364,9 +365,12 @@ class Spin:
             return np.einsum("i,ij->ij", np.sqrt(mass), p_tilde)
         else:
             # --- Successful Hop ---
-            # Rescale mass-weighted momentum along the NACV [cite: 565, 566]
-            rescale_factor = np.sqrt((E_kin_d + delta_V_nj) / E_kin_d) - 1.0
-            p_tilde_new = p_tilde + rescale_factor * d_tilde * (dot_pd / dot_dd)
+            direction = d_tilde / np.sqrt(dot_dd)
+            parallel = dot_pd / np.sqrt(dot_dd)
+            # At zero projection choose an orientation independent of NACV sign.
+            sign = parallel if parallel != 0 else direction.flat[np.argmax(np.abs(direction))]
+            parallel_new = np.copysign(np.sqrt(max(parallel**2 + 2 * delta_V_nj, 0.0)), sign)
+            p_tilde_new = p_tilde + (parallel_new - parallel) * direction
             
             # Active surface is updated (handled by index detection in the main loop) [cite: 568]
             print ("Successful hop detected. Rescaling momentum along NACV. E_kin_d: ", E_kin_d, " | Energy gap to overcome: ", energy_gap_to_overcome)

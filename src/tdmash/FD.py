@@ -1,18 +1,29 @@
-import copy
 import numpy as np
 from .TDOverlap import TDOverlap
 import scipy
 from numpy.linalg import svd
-from .TDRKS import TDRKSSimulation
-from .PT2 import PTCN_TDRHFSimulation
+
+
+class ZeroNACError(ValueError):
+    """The finite-difference NACV has no momentum-rescaling direction."""
+
+
 class Finite_Difference_NAC: 
-    def __init__(self, sim1, sim2,  displacement=0.01, steps=1):
+    def __init__(self, sim1, sim2,  displacement=0.01, steps=1, nac_mu=1.0, nac_dt=4.0):
+        """Central finite-difference NACV between the two propagated states.
+
+        Each displacement of +-displacement (Bohr) is crossed by ``steps``
+        Crank-Nicolson steps of length ``nac_dt`` (a.u.) with energy scaling
+        ``nac_mu``.  These are independent of the trajectory alpha and time step;
+        the defaults (alpha = 1, one step of 4 a.u., dR = 0.01 a.u.) are the
+        parameters used in Table 1 of the paper (revalidate after gauge changes).
+        """
         
 
-        self.sim1_forward = TDRKSSimulation(sim1.mf, dt=sim1.dt, nuclei_dt=sim1.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6,  mu=sim1.mu, imaginary_time=sim1.imaginary_time , propagation_method='accelerated')
-        self.sim2_forward =  TDRKSSimulation(sim2.mf, dt=sim2.dt, nuclei_dt=sim2.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6, mu=sim2.mu, imaginary_time=sim2.imaginary_time , propagation_method='accelerated')
-        self.sim1_backward = TDRKSSimulation(sim1.mf, dt=-sim1.dt, nuclei_dt=sim1.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6, mu=sim1.mu, imaginary_time=sim1.imaginary_time , propagation_method='accelerated')
-        self.sim2_backward = TDRKSSimulation(sim2.mf, dt=-sim2.dt, nuclei_dt=sim2.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6, mu=sim2.mu, imaginary_time=sim2.imaginary_time , propagation_method='accelerated' )
+        self.sim1_forward = type(sim1)(sim1.mf, dt=nac_dt, nuclei_dt=sim1.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6,  mu=nac_mu, imaginary_time=False, propagation_method='accelerated')
+        self.sim2_forward = type(sim2)(sim2.mf, dt=nac_dt, nuclei_dt=sim2.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6, mu=nac_mu, imaginary_time=False, propagation_method='accelerated')
+        self.sim1_backward = type(sim1)(sim1.mf, dt=-nac_dt, nuclei_dt=sim1.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6, mu=nac_mu, imaginary_time=False, propagation_method='accelerated')
+        self.sim2_backward = type(sim2)(sim2.mf, dt=-nac_dt, nuclei_dt=sim2.nuclei_dt, steps=steps, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-6, mu=nac_mu, imaginary_time=False, propagation_method='accelerated')
         #self.sim1_update.previous_mol = self.sim1.mol.copy()
         #self.sim2_update.previous_mol = self.sim2.mol.copy()
         #self.sim1_update.convergence_threshold = 1e-8
@@ -25,9 +36,11 @@ class Finite_Difference_NAC:
     def compute_nac(self, mo_coeff1 , mo_coeff2, positions):
         self.positions = positions.copy()
         nac = np.zeros((len(self.positions), 3), dtype=np.complex128)
-        
- 
-
+        self.sim1_forward.update_mol(self.positions)
+        self.sim2_forward.update_mol(self.positions)
+        self.sim1_forward.mo_coeff = mo_coeff1.copy()
+        self.sim2_forward.mo_coeff = mo_coeff2.copy()
+        reference = TDOverlap(self.sim1_forward, self.sim2_forward)
 
         for i in range(len(self.positions)):   
             for j in range(3):
@@ -71,10 +84,10 @@ class Finite_Difference_NAC:
                 self.sim1_backward.update_mol(displaced_positions_minus)
                 self.sim2_backward.update_mol(displaced_positions_minus)
 
-                tdoverlap_class = TDOverlap(self.sim1_backward, self.sim2_backward)
+                tdoverlap_class = TDOverlap(self.sim1_backward, self.sim2_backward, reference=reference)
                 # Cross-geometry AO overlap S(R - dR, R + dR), as used for the ensembles.
                 tdoverlap_class.update_mo_coeff(self.sim1_forward, self.sim2_forward,
-                                                previous_mol=self.sim1_backward.mol)
+                                                previous_mol=self.sim1_backward.mol, reference=reference)
                 tdoverlap = tdoverlap_class.update_overlap()
                 #print (tdoverlap)
                 #print (np.angle(tdoverlap[0,0],deg=True), np.angle(tdoverlap[0,1],deg=True), np.angle(tdoverlap[1,0],deg=True), np.angle(tdoverlap[1,1],deg=True))
@@ -85,7 +98,9 @@ class Finite_Difference_NAC:
                 #print (phase)
                 nac[i, j] = (scipy.linalg.logm(phase).real[0,1]) / (2*self.displacement)
 
-        norm = np.dot(nac.flatten(), nac.flatten())**0.5
+        norm = np.linalg.norm(nac)
+        if norm == 0:
+            raise ZeroNACError("The NACV is zero; its momentum-rescaling direction is undefined")
         return nac /norm  # Factor of 1/2 for NAC definition
 
 

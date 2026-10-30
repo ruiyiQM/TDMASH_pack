@@ -16,6 +16,7 @@ venv/
 *.log
 *_trajectory.xyz
 simulation_batch_*/
+/runs/
 
 # Keep the sampled initial conditions, which are inputs rather than output
 !initial_conditions/*.npy
