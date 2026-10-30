@@ -1,11 +1,10 @@
 # TDMASH
 
-Energy-scaled real-time TDDFT for ab initio surface hopping dynamics.
+Surface Hopping Dynamics on Adiabatic States Propagated with Real-Time TDDFT.
 
 This repository contains the reference implementation used in
 
-> R. Zhou and J. O. Richardson, *Energy-Scaled Real-Time TDDFT for Ab Initio
-> Surface Hopping Dynamics* (submitted).
+> R. Zhou and J. O. Richardson, *Surface Hopping Dynamics on Adiabatic States Propagated with Real-Time TDDFT* (submitted).
 
 The code propagates two Kohn–Sham determinants — the ground state and a
 ΔSCF excited state — simultaneously along a nuclear trajectory using an
@@ -20,8 +19,6 @@ couplings are then extracted from the propagated states in a Dynamical
 Transition Orbital (DTO) gauge, and the nuclei are driven by the Mapping
 Approach to Surface Hopping (MASH).
 
-Everything is built on [PySCF](https://pyscf.org/); no other quantum-chemistry
-backend is required.
 
 ## Installation
 
@@ -62,7 +59,6 @@ initial_conditions/  the sampled Wigner ensemble used in the paper
 | `tdmash.TDOverlap`, `tdmash.TDUOverlap` | Many-electron overlaps and the DTO gauge fixing |
 | `tdmash.Spin` | MASH mapping variables, hopping criterion and momentum rescaling |
 | `tdmash.FD` | Finite-difference nonadiabatic coupling vectors |
-| `tdmash.PT2` | Predictor-corrector Crank-Nicolson propagation utilities |
 | `tdmash.Verlet` | Velocity Verlet nuclear integrator |
 | `tdmash.Ehrenfest` | Driver for fixed-path runs (`FixedPathDynamics`): nuclei on the excited-state surface, mapping variables propagated as a diagnostic, no hops |
 | `tdmash.MASH` | Surface-hopping driver (`MASH`) |
@@ -126,7 +122,6 @@ Bloch-sphere sampling of the initial mapping variables.
   calculations use an electronic and nuclear time step of 0.4 a.u.
 - A larger `α` requires a smaller time step, since the phase accumulated per
   step grows in proportion to `α`.
-- Output `.npz` and trajectory files are ignored by git; see `.gitignore`.
 
 ## License
 
