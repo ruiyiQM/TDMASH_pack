@@ -2,6 +2,9 @@
 
 Surface Hopping Dynamics on Adiabatic States Propagated with Real-Time TDDFT.
 
+**Implemented by:** Ruiyi Zhou (ETH Zurich) —
+[ruiyi.zhou@phys.chem.ethz.ch](mailto:ruiyi.zhou@phys.chem.ethz.ch)
+
 This repository contains the reference implementation accompanying
 
 > R. Zhou and J. O. Richardson, *Surface Hopping Dynamics on Adiabatic States
@@ -151,3 +154,8 @@ If you use this code, please cite:
   url           = {https://arxiv.org/abs/2610.41686}
 }
 ```
+
+## Contact
+
+For questions or issues, please contact **Ruiyi Zhou** at ETH Zurich:
+[ruiyi.zhou@phys.chem.ethz.ch](mailto:ruiyi.zhou@phys.chem.ethz.ch).
