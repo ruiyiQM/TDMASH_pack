@@ -2,10 +2,11 @@
 
 Energy-scaled real-time TDDFT for ab initio surface hopping dynamics.
 
-This repository contains the reference implementation used in
+This repository contains the reference implementation accompanying
 
-> R. Zhou and J. O. Richardson, *Energy-Scaled Real-Time TDDFT for Ab Initio
-> Surface Hopping Dynamics* (submitted).
+> R. Zhou and J. O. Richardson, *Surface Hopping Dynamics on Adiabatic States
+> Propagated with Real-Time TDDFT*, arXiv:2610.41686 (2026).
+> [https://doi.org/10.48550/arXiv.2610.41686](https://doi.org/10.48550/arXiv.2610.41686)
 
 The code propagates two Kohn–Sham determinants — the ground state and a
 ΔSCF excited state — simultaneously along a nuclear trajectory using an
@@ -136,4 +137,21 @@ including ones that are not themselves openly licensed.
 
 ## Citation
 
-Please cite the paper above if you use this code.
+If you use this code, please cite:
+
+> Zhou, R.; Richardson, J. O. Surface Hopping Dynamics on Adiabatic States
+> Propagated with Real-Time TDDFT. *arXiv* **2026**, arXiv:2610.41686.
+> [https://doi.org/10.48550/arXiv.2610.41686](https://doi.org/10.48550/arXiv.2610.41686)
+
+```bibtex
+@misc{zhou2026surface,
+  author        = {Zhou, Ruiyi and Richardson, Jeremy O.},
+  title         = {Surface Hopping Dynamics on Adiabatic States Propagated with Real-Time TDDFT},
+  year          = {2026},
+  eprint        = {2610.41686},
+  archiveprefix = {arXiv},
+  primaryclass  = {physics.chem-ph},
+  doi           = {10.48550/arXiv.2610.41686},
+  url           = {https://arxiv.org/abs/2610.41686}
+}
+```
