@@ -11,6 +11,12 @@ This repository contains the reference implementation accompanying
 > Propagated with Real-Time TDDFT*, arXiv:2610.41686 (2026).
 > [https://doi.org/10.48550/arXiv.2610.41686](https://doi.org/10.48550/arXiv.2610.41686)
 
+**Version used in the paper.** Release `v0.1.0` of this repository is the
+reference implementation for the paper above. The `main` branch now receives
+only bug fixes. Further development, including additional dynamics methods
+and electronic-structure backends, continues in
+[RADIANT](https://github.com/ruiyiQM/RADIANT).
+
 The code propagates two Kohn–Sham determinants — the ground state and a
 ΔSCF excited state — simultaneously along a nuclear trajectory using an
 energy-scaled time-dependent Kohn–Sham equation,
