@@ -1,9 +1,11 @@
 from pyscf import gto, scf
+from pyscf.lib import logger
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
 from .Anderson import AndersonAcceleration
 from .MOM import singlet_occ_
+from .PT import pt_crank_nicolson
 
 def lowdin(s):
     """
@@ -34,6 +36,7 @@ def predictor_corrector_accelerated(self, F_current, E_t, dt=None):
         Convergence criteria: Change in MO coefficients.
         """
         self.prev_mo_coeff = self.mo_coeff.copy()
+        self.pc_converged = False
         if dt is None: dt = self.dt
         
         local_F_start = F_current * self.mu # Normalize input F
@@ -66,10 +69,12 @@ def predictor_corrector_accelerated(self, F_current, E_t, dt=None):
             # Compare current MOs with MOs from the previous iteration
             error_mo = mo_coeff_next - mo_coeff_iter_prev
             mo_diff = np.max(np.abs(error_mo))
+            self.pc_iterations = iter_count + 1
             if (self.count and iter_count > 0):
                 print (f" P-C iteration {iter_count}, max MO diff: {mo_diff:.2e}")
             # Check convergence (skip first iter to allow predictor to correct once)
             if iter_count > 0 and mo_diff < self.convergence_threshold:
+                self.pc_converged = True
                 # Update system state
                 self.mo_coeff = mo_coeff_next
                 self.F_prev_step = local_F_start.copy() # Store F(t) for next step's extrapolation
@@ -280,14 +285,17 @@ class TDRHFSimulation:
             self.predictor_corrector_propagation(F_current, E_t, dt=dt)
         elif self.propagation_method == 'accelerated':
             self.predictor_corrector_accelerated(F_current, E_t, dt=dt)
+        elif self.propagation_method == 'pt_cn':
+            pt_crank_nicolson(self, F_current, E_t, dt=dt)
         else:
             raise ValueError(
                 f"Unknown propagation method: {self.propagation_method}. "
-                "Supported methods are 'predictor_corrector' and 'accelerated'.")
+                "Supported methods are 'predictor_corrector', 'accelerated' and 'pt_cn'.")
 
     def predictor_corrector_propagation(self, F_current, E_t, dt=None):
         """Performs one step of predictor-corrector propagation for RHF."""
         self.prev_mo_coeff = self.mo_coeff.copy()
+        self.pc_converged = False
         if dt is None: dt = self.dt
 
         # Predictor
@@ -319,9 +327,11 @@ class TDRHFSimulation:
             mo_coeff_corrected = np.linalg.solve(A_corr, B_corr @ self.mo_coeff)
 
             mo_diff = np.max(np.abs(mo_coeff_corrected - mo_coeff_predict_iter))
+            self.pc_iterations = iter_count + 1
             if self.count:
                 print(f"  Iteration: {iter_count}, MO diff: {mo_diff:.2e}")
             if mo_diff < self.convergence_threshold:
+                self.pc_converged = True
                 mo_coeff_predict_iter = mo_coeff_corrected
                 break
             mo_coeff_predict_iter = mo_coeff_corrected
@@ -375,44 +385,53 @@ class TDRHFSimulation:
         return electronic_energy + self.mol.energy_nuc()
 
     def update_mol(self, positions=None):
-        """Updates the PySCF molecule object with current nuclear positions and rebuilds mf."""
-        if positions is None:
-            positions = self.positions
-
-        atom_coords_str = [f"{self.mol.atom_symbol(i)} {p[0]} {p[1]} {p[2]}" for i, p in enumerate(positions)]
-        
-
-        new_mol = gto.M(atom="\n".join(atom_coords_str),
-                        basis=self.mol.basis,
-                        unit="Bohr",
-                        charge=self.mol.charge,
-                        spin=self.mol.spin,
-                        cart=self.mol.cart)
-        if self.mol.ecp is not None:
-            new_mol.ecp = self.mol.ecp
-        new_mol.build()
-        self.mol = new_mol
-
-        #if (self.mo_coeff.shape[0] == 0):
-        self.mo_coeff = self.overlap_half @ self.mo_coeff
-
-        if (self.with_df is False):
-            self.mf = scf.RHF(self.mol)
+        """Transport orbitals to a new geometry while preserving backend settings."""
+        positions = np.asarray(self.positions if positions is None else positions, dtype=float)
+        if positions.shape != (self.mol.natm, 3) or not np.isfinite(positions).all():
+            raise ValueError("Nuclear positions must be a finite (natm, 3) array in Bohr.")
+        new_mol = self.mol.set_geom_(positions, unit="Bohr", inplace=False)
+        overlap = new_mol.intor('int1e_ovlp').astype(complex)
+        half_inv, half, inverse = lowdin(overlap)
+        if not np.allclose(half_inv @ overlap @ half_inv, np.eye(len(overlap)), rtol=0, atol=1e-9):
+            raise ValueError("Lowdin transport requires a nonsingular positive overlap matrix.")
+        mf = self.mf.copy()
+        # Reset private grid/DF objects without changing a caller's mean-field object.
+        for name in ("grids", "nlcgrids", "with_df"):
+            value = getattr(mf, name, None)
+            if value is not None:
+                setattr(mf, name, value.copy())
+        mf.reset(new_mol)
+        h_core = mf.get_hcore(new_mol)
+        transport = half_inv @ self.overlap_half
+        if getattr(self.mo_coeff, 'ndim', None) == 2:
+            coefficients = transport @ self.mo_coeff
         else:
-            self.mf = scf.RHF(self.mol).density_fit()
-        self.update_overlap()
-        #self.mo_coeff = self.orthogonalize_mo_coeff(self.mo_coeff)
-        self.mo_coeff = self.overlap_half_inv @ self.mo_coeff
+            blocks = [transport @ C for C in self.mo_coeff]
+            coefficients = np.stack(blocks) if blocks[0].shape == blocks[1].shape else blocks
 
-        # MODIFICATION: Recalculate and cache the core Hamiltonian for the new geometry
-        self.h_core = self.mf.get_hcore(self.mol)
-
-        # Reset cached density and potential since geometry has changed
+        self.previous_mol = self.mol
+        self.overlap_half_inv_previous = self.overlap_half_inv.copy()
+        self.overlap_half_previous = self.overlap_half.copy()
+        self.mol, self.mf = new_mol, mf
+        self.overlap = overlap
+        self.overlap_half_inv, self.overlap_half, self.overlap_inv = half_inv, half, inverse
+        self.mo_coeff, self.h_core = coefficients, h_core
+        if self.ehrenfest:
+            self.positions = positions.copy()
         self.dm_last = 0
         self.veff_last = 0
+        self.F = None
+        self.prev_F = None
+
+    def run_ehrenfest_midpoint_decoupled(self, alpha=1, apply_scf=False):
+        """Run the validated symmetric Lowdin electron--nuclear splitting."""
+        from .Verlet import run_ehrenfest_midpoint_decoupled
+        return run_ehrenfest_midpoint_decoupled(self, alpha=alpha, apply_scf=apply_scf)
 
     def run(self):
         """Main simulation loop."""
+        if self.ehrenfest and self.propagation_method == "pt_cn":
+            return self.run_ehrenfest_midpoint_decoupled()
         with open(self.output_filename, "w") as traj_file:
             if self.ehrenfest:
                 self.write_xyz(traj_file, -1)
@@ -583,16 +602,25 @@ class TDRHFSimulation:
         dip_z = np.trace(dm_total.real @ dipole_integrals[2])
         return np.array([dip_x, dip_y, dip_z]).real
 
-    def energy_grad(self, F_rhf, dm0_rhf=None):
+    def energy_grad(self, F_rhf, dm0_rhf=None, lowdin=False):
         if dm0_rhf is None:
             dm0_rhf = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
         
         mf_grad = self.mf.nuc_grad_method()
+        if lowdin and hasattr(mf_grad, 'grid_response'):
+            mf_grad.grid_response = True
         mol = self.mol
         hcore_deriv_generator = mf_grad.hcore_generator(mol)
         s1_deriv_ao = mf_grad.get_ovlp(mol)
         vhf_deriv_ao = mf_grad.get_veff(mol, dm0_rhf.real)
         corr = self.overlap_inv @ F_rhf @ dm0_rhf
+        pulay_term_matrix = corr + corr.conj().T
+        if lowdin:
+            source = dm0_rhf @ F_rhf @ self.overlap_half_inv
+            # The adjoint Sylvester solve differentiates S^(-1/2) at fixed orthogonal orbitals.
+            kernel = scipy.linalg.solve_sylvester(
+                self.overlap_half, self.overlap_half, source + source.conj().T)
+            pulay_term_matrix = 2 * kernel
         atmlst = range(mol.natm)
         de = np.zeros((len(atmlst), 3))
         aoslices = mol.aoslice_by_atom()
@@ -601,9 +629,10 @@ class TDRHFSimulation:
             h1ao_deriv_atom_k = hcore_deriv_generator(ia_atom_glob_idx)
             de[k_atom_idx] += np.einsum('xij,ij->x', h1ao_deriv_atom_k, dm0_rhf.real)
             de[k_atom_idx] += np.einsum('xij,ij->x', vhf_deriv_ao[:, p0:p1] , dm0_rhf[p0:p1].real) *2
-            pulay_term_matrix = corr + corr.conj().T
             de[k_atom_idx] -= np.einsum('xij,ij->x', s1_deriv_ao[:,p0:p1], pulay_term_matrix[p0:p1]).real
-            #de[k_atom_idx] += mf_grad.extra_force(ia_atom_glob_idx, locals())
+            if lowdin:
+                de[k_atom_idx] += mf_grad.extra_force(
+                    ia_atom_glob_idx, {'vhf': vhf_deriv_ao, 'log': logger.new_logger(mf_grad)})
         de += mf_grad.grad_nuc(mol)
         return de
 
@@ -673,11 +702,14 @@ class TDRHFSimulation:
 
         self.overlap_half_inv, self.overlap_half, self.overlap_inv = lowdin(self.overlap)
 
-    def calculate_forces(self):
+    def calculate_forces(self, lowdin=False):
         """Calculates nuclear forces using the current electronic state."""
         dm_for_force = self.make_rdm1(self.mo_coeff, self.mo_occ)
         self.F = self.get_fock_matrix(dm_for_force)
-        self.force = -self.energy_grad(self.F, dm_for_force)
+        if lowdin:
+            self.force = -self.energy_grad(self.F, dm_for_force, lowdin=True)
+        else:
+            self.force = -self.energy_grad(self.F, dm_for_force)
         #mf_grad = self.mf.nuc_grad_method()
         #self.force = -mf_grad.kernel(self.make_rdm1(self.mo_coeff, self.mo_occ).real)
     def update_dt(self,new_dt):

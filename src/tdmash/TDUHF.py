@@ -2,7 +2,9 @@ from pyscf import gto, scf
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
+from pyscf.lib import logger
 from .TDRHF import TDRHFSimulation
+from .PT import pt_crank_nicolson
 
 class TDUHFSimulation(TDRHFSimulation):
     """
@@ -13,6 +15,11 @@ class TDUHFSimulation(TDRHFSimulation):
     def initialize_molecular_orbitals(self, n_virtual):
         """Initializes molecular orbitals and occupation numbers for UHF."""
         self.n_virtual = n_virtual
+        if self.propagation_method == 'pt_cn':
+            occupations = np.asarray(self.mf.mo_occ)
+            if (occupations.ndim != 2 or occupations.shape[0] != 2
+                    or not np.all((occupations == 0) | (occupations == 1))):
+                raise ValueError("Unrestricted pt_cn requires integer spin occupations of zero or one.")
         
         # mf.mo_coeff and mf.mo_occ for UHF have shape (2, ...) for alpha/beta spins
         if n_virtual == 0:
@@ -26,21 +33,29 @@ class TDUHFSimulation(TDRHFSimulation):
             mo_occ_alpha = self.mf.mo_occ[0][occupied_mask_alpha].astype(complex)
             mo_occ_beta = self.mf.mo_occ[1][occupied_mask_beta].astype(complex)
             
-            # Store as numpy array of shape (2, NAO, NMO_spin)
-            # Note: alpha and beta might have different numbers of occupied orbitals if not careful,
-            # but standard numpy arrays need same shape. 
-            # If they differ, prefer using a list or ensuring equal size by padding (complex).
-            # Assuming they are equal for typical closed-shell starting points or handled by user.
-            # For general UHF, best to keep as object array or list if sizes differ.
-            # Here we assume standard cases or that the user knows they might differ.
-            # SAFEGUARD: if shapes differ, we might need to use a list or object array.
-            # For now, following the original pattern which implies they can be stacked:
-            self.mo_coeff = np.array([mo_coeff_alpha, mo_coeff_beta])
-            self.mo_occ = np.array([mo_occ_alpha, mo_occ_beta])
+            if mo_coeff_alpha.shape == mo_coeff_beta.shape:
+                self.mo_coeff = np.array([mo_coeff_alpha, mo_coeff_beta])
+                self.mo_occ = np.array([mo_occ_alpha, mo_occ_beta])
+            else:
+                if self.propagation_method != 'pt_cn':
+                    raise ValueError("Unequal spin populations currently require propagation_method='pt_cn'.")
+                # Unequal spin populations must not acquire zero determinant columns.
+                self.mo_coeff = [mo_coeff_alpha, mo_coeff_beta]
+                self.mo_occ = [mo_occ_alpha, mo_occ_beta]
         else:
             raise ValueError("n_virtual must be 0 for current TDUHF implementation.")
 
-        self.prev_mo_coeff = self.mo_coeff.copy()
+        self.prev_mo_coeff = (self.mo_coeff.copy() if isinstance(self.mo_coeff, np.ndarray)
+                              else [C.copy() for C in self.mo_coeff])
+
+    def propagate_electrons(self, F_current, E_t, dt=None):
+        """Dispatch joint spin PT-CN while retaining the existing balanced-spin CN paths."""
+        if self.propagation_method == 'pt_cn':
+            pt_crank_nicolson(self, F_current, E_t, dt=dt, unrestricted=True)
+        elif isinstance(self.mo_coeff, list):
+            raise ValueError("Unequal spin populations currently require propagation_method='pt_cn'.")
+        else:
+            super().propagate_electrons(F_current, E_t, dt=dt)
 
     def make_rdm1(self, mo_coeff, mo_occ):
         """
@@ -63,8 +78,8 @@ class TDUHFSimulation(TDRHFSimulation):
 
         # UHF V_eff (Coulomb - Exchange for each spin)
         # PySCF get_veff for UHF with dm_total shape (2, NAO, NAO) returns (2, NAO, NAO) V_eff
-        self.veff = self.mf.get_veff(self.mol, dm_total.real, dm_last=self.dm_last.real, vhf_last=self.veff_last)
-        
+        self.veff = self.mf.get_veff(self.mol, dm_total, dm_last=self.dm_last, vhf_last=self.veff_last)
+        self.dm_last = dm_total.copy()
         self.veff_last = self.veff.copy()
         # External field interaction term
         field_component_map = {'x': 0, 'y': 1, 'z': 2}
@@ -87,13 +102,11 @@ class TDUHFSimulation(TDRHFSimulation):
             
         h_core = self.h_core
         # PySCF get_veff for UHF returns (V_eff_alpha, V_eff_beta)
-        vhf = self.mf.get_veff(self.mol, dm_total.real) 
+        vhf = self.mf.get_veff(self.mol, dm_total)
         
         # Energy = Tr(H_core * D_tot) + 0.5 * Tr(V_eff_alpha * D_alpha + V_eff_beta * D_beta)
-        dm_sum = dm_total[0] + dm_total[1]
-        e1 = np.einsum('ij,ji->', h_core.real, dm_sum.real)
-        e_coul = 0.5 * (np.einsum('ij,ji->', vhf[0].real, dm_total[0].real) + 
-                        np.einsum('ij,ji->', vhf[1].real, dm_total[1].real))
+        e1 = np.einsum('ij,sji->', h_core, dm_total).real
+        e_coul = 0.5 * np.einsum('sij,sji->', vhf, dm_total).real
         
         electronic_energy = (e1 + e_coul).real
         return electronic_energy + self.mol.energy_nuc()
@@ -208,7 +221,7 @@ class TDUHFSimulation(TDRHFSimulation):
 
         return mo_coeff
 
-    def energy_grad(self, F_matrix,  dm_total=None):
+    def energy_grad(self, F_matrix, dm_total=None, lowdin=False):
         
 
         """
@@ -223,6 +236,8 @@ class TDUHFSimulation(TDRHFSimulation):
             )
         # Get RHF gradient object from the current mf (which has updated mol if needed)
         mf_grad = self.mf.nuc_grad_method() 
+        if lowdin and hasattr(mf_grad, 'grid_response'):
+            mf_grad.grid_response = True
         mol = self.mol # Current molecule object
 
         hcore_deriv_generator = mf_grad.hcore_generator(mol) # Generator for dHcore/dRa
@@ -235,10 +250,25 @@ class TDUHFSimulation(TDRHFSimulation):
         # where each component is (natm, nao, nao)
 
         vhf_deriv_ao = mf_grad.get_veff(mol, dm_total.real) # Shape (3, nao, nao)
+        omega, alpha, hybrid = (0., 1., 1.)
+        if hasattr(self.mf, '_numint'):
+            omega, alpha, hybrid = self.mf._numint.rsh_and_hybrid_coeff(self.mf.xc, spin=mol.spin)
+        exchange_imag = None
+        if np.any(dm_total.imag) and (hybrid != 0 or omega != 0 and alpha != hybrid):
+            # PySCF's real integral-gradient builder omits the imaginary exchange contraction.
+            exchange_imag = hybrid * mf_grad.get_k(mol, dm_total.imag)
+            if omega != 0 and alpha != hybrid:
+                exchange_imag += (alpha - hybrid) * mf_grad.get_k(mol, dm_total.imag, omega=omega)
         #print (vhf_deriv_ao)
         # Energy-weighted density matrix term for Pulay force
         # corr = S^-1 @ F @ D (S^-1 F D is related to energy-weighted DM P_E S)
         corr = self.overlap_inv @ F_matrix[0] @ dm_total[0] + self.overlap_inv @ F_matrix[1] @ dm_total[1]
+        pulay_term_matrix = corr + corr.conj().T
+        if lowdin:
+            source = sum(dm_total[s] @ F_matrix[s] @ self.overlap_half_inv for s in (0, 1))
+            kernel = scipy.linalg.solve_sylvester(
+                self.overlap_half, self.overlap_half, source + source.conj().T)
+            pulay_term_matrix = 2 * kernel
 
         atmlst = range(mol.natm)
         de = np.zeros((len(atmlst), 3))
@@ -260,6 +290,8 @@ class TDUHFSimulation(TDRHFSimulation):
             # dVeff/d(R_k_atom_idx) has shape (3, nao, nao)
 
             de[k_atom_idx] += np.einsum('sxij,sij->x', vhf_deriv_ao[:,:, p0:p1] , dm_total[:,p0:p1].real)* 2.0 # Factor of 2 for double counting in Coulomb term
+            if exchange_imag is not None:
+                de[k_atom_idx] -= 2 * np.einsum('sxij,sij->x', exchange_imag[:, :, p0:p1], dm_total[:, p0:p1].imag)
            
             # Pulay force contribution from dS/dR   
             # s1_deriv_ao is a list, s1_deriv_ao[k_atom_idx] is (3, nao, nao) for atom k_atom_idx
@@ -268,11 +300,14 @@ class TDUHFSimulation(TDRHFSimulation):
             # The original UHF code used .real for einsum results.
             # corr is complex. s1_deriv_atom_k is real.
             # (corr + corr.H) is Hermitian.
-            pulay_term_matrix = corr + corr.conj().T 
             de[k_atom_idx] -= np.einsum('xij,ij->x', s1_deriv_ao[:,p0:p1], pulay_term_matrix[p0:p1]).real 
             # For any extra terms specific to the gradient method (e.g., for specific functionals in DFT)
             # For HF, this is usually zero unless there are other perturbations.
-            de[k_atom_idx] += mf_grad.extra_force(ia_atom_glob_idx, locals()) # locals() might not be safe here. Pass specific needed vars.
+            if lowdin:
+                de[k_atom_idx] += mf_grad.extra_force(
+                    ia_atom_glob_idx, {'vhf': vhf_deriv_ao, 'log': logger.new_logger(mf_grad)})
+            else:
+                de[k_atom_idx] += mf_grad.extra_force(ia_atom_glob_idx, locals())
             # For standard HF, this term is often not needed or is handled by other parts.
 
         de += mf_grad.grad_nuc(mol) # Nuclear repulsion gradient
@@ -292,47 +327,7 @@ class TDUHFSimulation(TDRHFSimulation):
         dip_z = np.trace(dm_sum.real @ dipole_integrals[2])
         return np.array([dip_x, dip_y, dip_z]).real
 
-    def update_mol(self, positions=None):
-        """Updates the PySCF molecule object and rebuilds UHF mean-field."""
-        if positions is None:
-            positions = self.positions
-
-        atom_coords_str = [f"{self.mol.atom_symbol(i)} {p[0]} {p[1]} {p[2]}" for i, p in enumerate(positions)]
-        
-        new_mol = gto.M(atom="\n".join(atom_coords_str),
-                        basis=self.mol.basis,
-                        unit="Bohr",
-                        charge=self.mol.charge,
-                        spin=self.mol.spin,
-                        cart=self.mol.cart)
-        if self.mol.ecp is not None:
-            new_mol.ecp = self.mol.ecp
-        new_mol.build()
-        self.mol = new_mol
-
-        # Propagate MOs to new geometry (using Lowdin overlap)
-        # mo_coeff is (2, NAO, NMO), overlap_half is (NAO, NAO).
-        # Need to apply overlap_half to each spin component.
-        self.mo_coeff[0] = self.overlap_half @ self.mo_coeff[0]
-        self.mo_coeff[1] = self.overlap_half @ self.mo_coeff[1]
-
-        if not self.with_df:
-            self.mf = scf.UHF(self.mol)
-        else:
-            self.mf = scf.UHF(self.mol).density_fit()
-            
-        self.update_overlap()
-
-        # Transform back using new overlap
-        self.mo_coeff[0] = self.overlap_half_inv @ self.mo_coeff[0]
-        self.mo_coeff[1] = self.overlap_half_inv @ self.mo_coeff[1]
-
-        # Recalculate and cache the core Hamiltonian for the new geometry
-        self.h_core = self.mf.get_hcore(self.mol)
-
-        # Reset cached density and potential
-        self.dm_last = 0
-        self.veff_last = 0
+    update_mol = TDRHFSimulation.update_mol
 
     def energy_constraint(self, dm_total=None, fock_matrix=None):
         """

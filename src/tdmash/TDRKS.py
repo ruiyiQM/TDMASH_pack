@@ -2,7 +2,7 @@ from pyscf import gto, scf, dft
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
-from .TDRHF import TDRHFSimulation, lowdin
+from .TDRHF import TDRHFSimulation
 from .MOM import singlet_occ_
 
 def energy_tot(self, dm_total=None):
@@ -37,50 +37,6 @@ def energy_tot(self, dm_total=None):
 
 
 
-def update_mol(self, positions=None):
-    """Updates the PySCF molecule object with current nuclear positions and rebuilds mf."""
-        # Create a new molecule object with the updated geometry
-        # This is safer than trying to update self.mol._atom in place for PySCF.
-
-    if positions is None:
-        positions = self.positions
-
-    atom_coords_str = []
-    for i in range(self.mol.natm):
-        symbol = self.mol.atom_symbol(i)
-        x, y, z = positions[i]
-        atom_coords_str.append(f"{symbol} {x} {y} {z}")
-        
-    new_mol = gto.M(atom="\n".join(atom_coords_str),
-                    basis=self.mol.basis,
-                    unit="Bohr",
-                    charge=self.mol.charge,
-                    spin=self.mol.spin, # For RHF, spin should be 0 (singlet)
-                    cart=self.mol.cart) # Preserve cartesian/spherical setting
-        
-    new_mol.build()
-    self.previous_mol = self.mol.copy()
-    self.mol = new_mol
-
-    self.xc = self.mf.xc  # Preserve the exchange-correlation functional
-    if self.with_df is False:
-        self.mf = dft.RKS(new_mol, xc=self.xc)  # Reinitialize with the new molecule
-    else:
-        self.mf = dft.RKS(new_mol, xc=self.xc).density_fit()  # Reinitialize with the new molecule
-
-    self.mo_coeff = self.overlap_half @ self.mo_coeff  # Transform MO coeffs to new basis
-    self.update_overlap() # Update overlap matrix S and its inverses S^-1, S^-1/2
-    self.mo_coeff = self.overlap_half_inv @ self.mo_coeff # Lowdin orthogonalization to new basis
-    # MODIFICATION: Recalculate and cache the core Hamiltonian for the new geometry
-    self.h_core = self.mf.get_hcore(self.mol)
-
-    # Reset cached density and potential since geometry has changed
-    self.dm_last = 0
-    self.veff_last = 0
-    # Important: If mf had specific convergence, DIIS settings, etc., they are reset here.
-    # For robust Ehrenfest, one might need to carry over more from the original mf setup
-    # or re-converge SCF if that's part of the model (not typical for pure Ehrenfest propagation).
-    # For this code, we assume propagation relies on the MOs, and mf is mainly for integrals.
 def apply_scf(self):
 
         """
@@ -110,7 +66,7 @@ class TDRKSSimulation(TDRHFSimulation):
     __init__ = TDRHFSimulation.__init__
 
     energy_tot = energy_tot
-    update_mol = update_mol
+    update_mol = TDRHFSimulation.update_mol
     apply_scf = apply_scf
 
     

@@ -5,26 +5,16 @@ import scipy
 from .TDUHF import TDUHFSimulation
 
 def energy_tot(self, dm_total=None):
-    """
-    Compute the total electronic energy for RHF.
-    Includes nuclear repulsion energy.
-    """
+    """Return the unrestricted KS energy, including complex exchange density."""
     if dm_total is None:
         dm_total = self.make_rdm1(
             mo_coeff=self.mo_coeff,
             mo_occ=self.mo_occ
         )
         
-    dm_total = np.asarray(dm_total)  # Ensure C-contiguous array for PySCF compatibility
-    # Use PySCF's RHF energy calculation for robustness
-    # mf.energy_elec(dm=dm_total.real) returns (e_elec, e_nuc_from_hf_approx)
-    # We need total electronic energy + explicit nuclear repulsion
-    h_core = self.mf.get_hcore(self.mol) # Needs to be current H_core if mol moves
-    # Electronic energy: Tr(D * (H_core + 0.5 * V_eff))
-    # V_eff = J(D) - 0.5 K(D) for RHF (using D_total)
-     # PySCF get_veff(dm_total.real) for RHF returns J(D_total) - 0.5 K(D_total)
-    vhf = self.mf.get_veff(self.mol, dm_total.real) # V_eff for RHF
-    #vhf =self.veff 
+    dm_total = np.asarray(dm_total)
+    h_core = self.mf.get_hcore(self.mol)
+    vhf = self.mf.get_veff(self.mol, dm_total)
 
     e1 = np.einsum('ij,xji->', h_core.real, dm_total.real)
     ecoul = vhf.ecoul.real
@@ -37,44 +27,6 @@ def energy_tot(self, dm_total=None):
 
 
 
-def update_mol(self, positions=None):
-    """Updates the PySCF molecule object with current nuclear positions and rebuilds mf."""
-        # Create a new molecule object with the updated geometry
-        # This is safer than trying to update self.mol._atom in place for PySCF.
-
-    if positions is None:
-        positions = self.positions
-
-    atom_coords_str = []
-    for i in range(self.mol.natm):
-        symbol = self.mol.atom_symbol(i)
-        x, y, z = positions[i]
-        atom_coords_str.append(f"{symbol} {x} {y} {z}")
-        
-    new_mol = gto.M(atom="\n".join(atom_coords_str),
-                    basis=self.mol.basis,
-                    unit="Bohr",
-                    charge=self.mol.charge,
-                    spin=self.mol.spin, # For RHF, spin should be 0 (singlet)
-                    cart=self.mol.cart) # Preserve cartesian/spherical setting
-        
-    new_mol.build()
-    self.previous_mol = self.mol.copy()
-    self.mol = new_mol
-
-    self.xc = self.mf.xc  # Preserve the exchange-correlation functional
-    self.mf = dft.UKS(self.mol, xc=self.xc)  # Reinitialize with the new molecule
-    self.mo_coeff[0] = self.overlap_half @self.mo_coeff[0]  # Preserve MOs
-    self.mo_coeff[1] = self.overlap_half @self.mo_coeff[1]  # Preserve MOs
-    self.update_overlap() # Update overlap matrix S and its inverses S^-1, S^-1/2
-    self.mo_coeff[0] = self.overlap_half_inv @ self.mo_coeff[0]  # Preserve MOs
-    self.mo_coeff[1] = self.overlap_half_inv @ self.mo_coeff[1]  # Preserve MOs
-
-    self.h_core = self.mf.get_hcore(self.mol)
-
-    # Reset cached density and potential since geometry has changed
-    self.dm_last = 0
-    self.veff_last = 0
     # Important: If mf had specific convergence, DIIS settings, etc., they are reset here.
     # For robust Ehrenfest, one might need to carry over more from the original mf setup
     # or re-converge SCF if that's part of the model (not typical for pure Ehrenfest propagation).
@@ -107,7 +59,7 @@ class TDUKSSimulation(TDUHFSimulation):
     __init__ = TDUHFSimulation.__init__
 
     energy_tot = energy_tot
-    update_mol = update_mol
+    update_mol = TDUHFSimulation.update_mol
     apply_scf = apply_scf
 
     

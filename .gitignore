@@ -17,6 +17,9 @@ venv/
 *_trajectory.xyz
 simulation_batch_*/
 
+# Local validation reports and derived artifacts
+/docs/validation/
+
 # Keep the sampled initial conditions, which are inputs rather than output
 !initial_conditions/*.npy
 !initial_conditions/*.xyz

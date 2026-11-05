@@ -4,7 +4,6 @@ from .TDOverlap import TDOverlap
 import scipy
 from numpy.linalg import svd
 from .TDRKS import TDRKSSimulation
-from .PT2 import PTCN_TDRHFSimulation
 class Finite_Difference_NAC: 
     def __init__(self, sim1, sim2,  displacement=0.01, steps=1):
         

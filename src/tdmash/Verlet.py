@@ -10,133 +10,102 @@ from .TDUOverlap import TDOverlap
 # --- Define Propagation Methods ---
 # These functions will be "monkey-patched" onto the TDRKSSimulation class.
 
-def run_ehrenfest_midpoint_decoupled(self, alpha =1 , apply_scf = False ):
-    """
-    Main simulation loop for Ehrenfest dynamics with decoupled time steps,
-    using the "nuclear-position-coupled midpoint Fock integrator"
-    concept from Li et al., J. Chem. Phys. 123, 084106 (2005).
-    
-    This makes the electronic propagation symmetric w.r.t. the
-    Velocity Verlet nuclear step, improving energy conservation.
+def run_ehrenfest_midpoint_decoupled(self, alpha=1, apply_scf=False):
+    """Run symmetric, field-free Lowdin Ehrenfest dynamics with integer occupations.
+
+    Nuclear steps contain an integer number of electronic steps at the midpoint.
+    Both PT-CN and ordinary CN use identical transport and forces.
     """
     if not self.ehrenfest:
-        raise ValueError("run_ehrenfest_midpoint_decoupled is only for Ehrenfest dynamics.")
-
-    # Determine how many electronic steps per nuclear step
+        raise ValueError("The midpoint Ehrenfest driver requires ehrenfest=True.")
+    unrestricted = isinstance(self, TDUHFSimulation)
+    blocks = self.mo_coeff if unrestricted else [self.mo_coeff]
+    occupations = self.mo_occ if unrestricted else [self.mo_occ]
+    if (self.n_virtual != 0 or len(blocks) != (2 if unrestricted else 1)
+            or len(occupations) != len(blocks)
+            or any(C.ndim != 2 or occ.ndim != 1 or C.shape[1] != len(occ)
+                   or not np.all(occ == (1 if unrestricted else 2))
+                   for C, occ in zip(blocks, occupations))):
+        raise ValueError("The midpoint Ehrenfest driver requires integer-occupied RHF/RKS or UHF/UKS.")
+    if (not np.isfinite(self.dt) or self.dt <= 0
+            or not np.isfinite(self.nuclei_dt) or self.nuclei_dt <= 0):
+        raise ValueError("The midpoint Ehrenfest driver requires positive finite electronic and nuclear dt.")
+    ratio = self.nuclei_dt / self.dt
+    if not np.isfinite(ratio) or ratio < 1 or not np.isclose(ratio, round(ratio), rtol=0, atol=1e-12):
+        raise ValueError("Nuclear dt must be an integer multiple of electronic dt.")
+    electronic_steps = round(ratio)
     dt_N = self.nuclei_dt
-    dt_e = self.dt
-    num_elec_steps = dt_N / dt_e
-    if not np.isclose(num_elec_steps, np.round(num_elec_steps)):
-        raise ValueError(f"nuclei_dt ({dt_N}) must be an integer multiple of dt ({dt_e}).")
-    elec_steps_per_nuc_step = int(np.round(num_elec_steps))
+    if (not np.isfinite(self.mu) or self.mu <= 0 or alpha != 1
+            or self.imaginary_time or apply_scf):
+        raise ValueError("The midpoint Ehrenfest driver requires positive finite mu, alpha=1 and real-time propagation without SCF resets.")
+    if self.field_type != 'none' or self.with_df:
+        raise ValueError("The midpoint Ehrenfest driver currently requires no external field and no density fitting.")
+    if not isinstance(self.steps, (int, np.integer)) or self.steps < 0:
+        raise ValueError("The number of nuclear steps must be a nonnegative integer.")
+    if not np.isfinite(self.positions).all() or not np.isfinite(self.velocities).all():
+        raise ValueError("Initial positions and velocities must be finite.")
 
-    print(f"Starting midpoint-decoupled Ehrenfest dynamics (Li et al. method):")
-    print(f"  Nuclear steps: {self.steps}")
-    print(f"  Nuclear dt (dt_N): {dt_N} a.u.")
-    print(f"  Electronic dt (dt_e): {dt_e} a.u.")
-    print(f"  {elec_steps_per_nuc_step} electronic steps per nuclear step.")
+    self.t = 0.0
+    for name in ("times", "potential_energies", "kinetic_energies", "total_energies", "dipoles",
+                 "positions_history", "velocities_history", "forces_history"):
+        setattr(self, name, [])
 
-    with open(self.output_filename, "w") as traj_file:
-        # --- Initial state (t=0) ---
-        self.t = 0.0
-        self.write_xyz(traj_file, 0) # Write initial geometry
-
-        # Calculate initial force and energy
-        dm_initial = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
-        # self.F is updated inside calculate_forces
-        self.calculate_forces() # Calculates F(t=0)
-
-        # Log initial energy (t=0)
+    def record():
+        dm = self.make_rdm1(self.mo_coeff, self.mo_occ)
+        potential = self.energy_tot(dm_total=dm)
+        kinetic = 0.5 * np.sum(self.mass[:, None] * self.velocities**2)
+        dipole = self.calculate_dipole(dm)
+        if (not np.isfinite([potential, kinetic]).all() or not np.isfinite(self.force).all()
+                or not np.isfinite(dipole).all()):
+            raise RuntimeError("Nonfinite Ehrenfest endpoint observables.")
         self.times.append(self.t)
-        potential_energy = self.energy_tot(dm_total=dm_initial)
-        kinetic_energy = 0.5 * np.sum(self.mass * np.linalg.norm(self.velocities, axis=1)**2)
-        total_energy = potential_energy + kinetic_energy
-        
-        self.potential_energies.append(potential_energy)
-        self.kinetic_energies.append(kinetic_energy)
-        self.total_energies.append(total_energy)
-        dipole_moment = self.calculate_dipole(dm_initial)
-        self.dipoles.append(dipole_moment)
+        self.potential_energies.append(potential)
+        self.kinetic_energies.append(kinetic)
+        self.total_energies.append(potential + kinetic)
+        self.dipoles.append(dipole)
+        self.positions_history.append(self.positions.copy())
+        self.velocities_history.append(self.velocities.copy())
+        self.forces_history.append(self.force.copy())
 
-        print(f"Step: 0 (Initial), Time: {self.t:.2f} a.u., PE: {potential_energy:.6f}, KE: {kinetic_energy:.6f}, Total E: {total_energy:.6f}")
-
-        # --- Main loop (nuclear steps) ---
-        for nuc_step in range(self.steps):
-            
-            # --- Step a: Verlet Part 1 (half velocity, half position) ---
-            # v(t + dt_N/2) = v(t) + 0.5 * F(t) * dt_N / m
-            self.velocities += 0.5 * dt_N * np.einsum('i,ij->ij', 1. / self.mass, self.force)
-            
-            # R_mid = R(t + dt_N/2) = R(t) + v(t + dt_N/2) * (dt_N / 2)
-            R_mid = self.positions + self.velocities * (dt_N / 2.0)
-            
-            # --- Step b: Update Mol to Midpoint ---
-            # Update molecule geometry, h_core, overlap to *midpoint* R_mid
-            self.update_mol(positions=R_mid) 
-
-            # --- Step c: Inner Loop (Electronic Propagation) ---
-            # Propagate electrons from t to t + dt_N under the *fixed midpoint geometry*
-
-            #for elec_step in range(0,):
-            for elec_step in range(elec_steps_per_nuc_step ):
-                # Get Fock matrix at current electronic time t
-                # H_core and overlap are fixed at H(R_mid)
-                dm_current_elec = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
-                E_t_current_elec = self.electric_field(self.t)
-                F_current_elec = self.get_fock_matrix(dm_current_elec, E_t_current_elec)
-                
-                # Propagate electronics by one small 'dt_e' step
-                self.propagate_electrons(F_current_elec, E_t_current_elec, dt=dt_e * alpha) 
-                # self.mo_coeff = self.orthogonalize_mo_coeff(self.mo_coeff)
-                
-                # Advance electronic time
-                self.t += dt_e
-            
-            # --- Step d: Verlet Part 1 (remaining half position) ---
-            # R_new = R(t + dt_N) = R_mid + v(t + dt_N/2) * (dt_N / 2)
-            R_new = R_mid + self.velocities * (dt_N / 2.0)
-            self.positions = R_new
-
-            # --- Step e: Update Mol to Final Point & Get New Force ---
-            # Must update mol to R_new to calculate F(t + dt_N)
-            self.update_mol(positions=R_new) 
-            
-            dm_final = self.make_rdm1(mo_coeff=self.mo_coeff, mo_occ=self.mo_occ)
-            # self.F is updated inside calculate_forces
-            self.calculate_forces() # Calculates F(t + dt_N)
-            
-            # --- Step f: Verlet Part 2 (update velocity) ---
-            # v(t + dt_N) = v(t + dt_N/2) + 0.5 * F(t + dt_N) * dt_N / m
-            self.velocities += 0.5 * dt_N * np.einsum('i,ij->ij', 1. / self.mass, self.force)
-            
-            # --- Step g: Log data ---
-            self.times.append(self.t)
-            potential_energy = self.energy_tot(dm_total=dm_final)
-            kinetic_energy = 0.5 * np.sum(self.mass * np.linalg.norm(self.velocities, axis=1)**2)
-            total_energy = potential_energy + kinetic_energy
-            
-            self.potential_energies.append(potential_energy)
-            self.kinetic_energies.append(kinetic_energy)
-            self.total_energies.append(total_energy)
-            dipole_moment = self.calculate_dipole(dm_final)
-            self.dipoles.append(dipole_moment)
-
-            if (nuc_step + 1) % 10 == 0:
-                print(f"Nuc Step: {nuc_step + 1}, Time: {self.t:.2f} a.u., PE: {potential_energy:.6f}, KE: {kinetic_energy:.6f}, Total E: {total_energy:.6f}")
-
-            if self.output_interval > 0 and (nuc_step + 1) % self.output_interval == 0:
-                self.write_xyz(traj_file, nuc_step + 1)
+    self.calculate_forces(lowdin=True)
+    if self.propagation_method == 'pt_cn':
+        self.propagate_electrons(self.F, 0.0, dt=0.0)
+    record()
+    with open(self.output_filename, "w") as traj_file:
+        if self.output_interval > 0:
+            self.write_xyz(traj_file, 0)
+        for step in range(self.steps):
+            saved = self.__dict__.copy()
+            try:
+                v_half = self.velocities + 0.5 * dt_N * self.force / self.mass[:, None]
+                midpoint = self.positions + 0.5 * dt_N * v_half
+                self.update_mol(midpoint)
+                for electronic_step in range(electronic_steps):
+                    dm = self.make_rdm1(self.mo_coeff, self.mo_occ)
+                    F_start = self.get_fock_matrix(dm, 0.0)
+                    self.propagate_electrons(F_start, 0.0, dt=self.dt)
+                    if self.propagation_method != 'pt_cn' and not self.pc_converged:
+                        raise RuntimeError("CN corrector did not converge; nuclear step was not advanced.")
+                    self.t = step * dt_N + (electronic_step + 1) * self.dt
+                self.update_mol(midpoint + 0.5 * dt_N * v_half)
+                self.calculate_forces(lowdin=True)
+                self.velocities = v_half + 0.5 * dt_N * self.force / self.mass[:, None]
+                self.t = (step + 1) * dt_N
+                record()
+            except Exception:
+                self.__dict__.clear()
+                self.__dict__.update(saved)
+                raise
+            if self.output_interval > 0 and (step + 1) % self.output_interval == 0:
+                self.write_xyz(traj_file, step + 1)
 
     if self.energy_filename:
-        energy_data = {
-            "time": np.array(self.times),
-            "potential_energy": np.array(self.potential_energies),
-            "dipole_moment": np.array(self.dipoles),
-            "kinetic_energy": np.array(self.kinetic_energies),
-            "total_energy": np.array(self.total_energies)
-        }
-        np.savez(self.energy_filename, **energy_data)
-        print(f"Energy and dipole data saved to {self.energy_filename}")
+        np.savez(self.energy_filename, time=np.asarray(self.times),
+                 potential_energy=np.asarray(self.potential_energies),
+                 kinetic_energy=np.asarray(self.kinetic_energies),
+                 total_energy=np.asarray(self.total_energies), dipole_moment=np.asarray(self.dipoles),
+                 positions=np.asarray(self.positions_history), velocities=np.asarray(self.velocities_history),
+                 forces=np.asarray(self.forces_history))
 
 def run_ehrenfest_midpoint_decoupled_UKS(self, alpha =1 ):
     """
