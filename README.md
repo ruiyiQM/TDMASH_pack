@@ -1,11 +1,21 @@
 # TDMASH
 
-Energy-scaled real-time TDDFT for ab initio surface hopping dynamics.
+Surface Hopping Dynamics on Adiabatic States Propagated with Real-Time TDDFT.
 
-This repository contains the reference implementation used in
+**Implemented by:** Ruiyi Zhou (ETH Zurich) —
+[ruiyi.zhou@phys.chem.ethz.ch](mailto:ruiyi.zhou@phys.chem.ethz.ch)
 
-> R. Zhou and J. O. Richardson, *Energy-Scaled Real-Time TDDFT for Ab Initio
-> Surface Hopping Dynamics* (submitted).
+This repository contains the reference implementation accompanying
+
+> R. Zhou and J. O. Richardson, *Surface Hopping Dynamics on Adiabatic States
+> Propagated with Real-Time TDDFT*, arXiv:2610.41686 (2026).
+> [https://doi.org/10.48550/arXiv.2610.41686](https://doi.org/10.48550/arXiv.2610.41686)
+
+**Version used in the paper.** Release `v0.1.0` of this repository is the
+reference implementation for the paper above. The `main` branch now receives
+only bug fixes. Further development, including additional dynamics methods
+and electronic-structure backends, continues in
+[RADIANT](https://github.com/ruiyiQM/RADIANT).
 
 The code propagates two Kohn–Sham determinants — the ground state and a
 ΔSCF excited state — simultaneously along a nuclear trajectory using an
@@ -20,8 +30,6 @@ couplings are then extracted from the propagated states in a Dynamical
 Transition Orbital (DTO) gauge, and the nuclei are driven by the Mapping
 Approach to Surface Hopping (MASH).
 
-Everything is built on [PySCF](https://pyscf.org/); no other quantum-chemistry
-backend is required.
 
 ## Installation
 
@@ -48,7 +56,7 @@ from tdmash import TDRKSSimulation, MASH, FixedPathDynamics
 src/tdmash/        the importable package
 examples/          runnable input scripts for trans-diimide
 scripts/           utilities for generating initial conditions
-initial_conditions/  the sampled Wigner ensemble used in the paper
+initial_conditions/  initial conditions; ensemble_ic.npz is the set used for the paper's ensemble
 ```
 
 ### Modules
@@ -231,13 +239,29 @@ python examples/run_fixed_path_rks.py
 
 ## Initial conditions
 
-`initial_conditions/` holds the 100-member Wigner ensemble used for the
-published results (coordinates and velocities in atomic units, plus the
-sampled initial spin vectors). To regenerate it:
+`initial_conditions/ensemble_ic.npz` holds the 100 initial conditions that were
+actually used for the ensemble results in the paper (arrays `coords` and `vel`
+of shape `(100, 4, 3)` and `spin` of shape `(100, 3)`; atomic units, in the
+legacy Bloch-vector convention described below). Its SHA-256 checksum is
+`eed733936ff2e73a6088838efe97ab1015f8644eb7529b5880d6adb2dd11d174`. Entry `i`
+(zero-based) corresponds to `structure_{i+1}` of the production runs.
 
-```bash
-python scripts/generate_NHNH_Wigner.py
-```
+The files `wigner_coords_100.npy`, `wigner_velocities_100.npy`,
+`wigner_spin_100.npy` and `wigner_structures_100.xyz` were shipped with
+release `v0.1.0`. Their spin vectors are identical to those in
+`ensemble_ic.npz`, but their coordinates and velocities are a different set of
+samples (largest difference 0.67 bohr in the coordinates), so they do **not**
+reproduce the paper's ensemble. They are kept unchanged for backward
+compatibility. `wigner_spin_100.npy` is an `.npz` container; load it with
+`np.load(..., allow_pickle=False)["spin"]`.
+
+The random seed and the Hessian used to generate the production set were not
+recorded, so `scripts/generate_NHNH_Wigner.py` is a sampling example and is not
+guaranteed to regenerate `ensemble_ic.npz`.
+
+In the legacy Bloch convention used by the stored spins, `z = |c0|^2 - |c1|^2`,
+so `S_z < 0` is the initially excited state (index 1). The convention in the
+paper is `S_z = |c1|^2 - |c0|^2`.
 
 `tdmash.Wigner` implements the nuclear sampling and `tdmash.sampler` the
 Bloch-sphere sampling of the initial mapping variables.
@@ -248,7 +272,6 @@ Bloch-sphere sampling of the initial mapping variables.
   calculations use an electronic and nuclear time step of 0.4 a.u.
 - A larger `α` requires a smaller time step, since the phase accumulated per
   step grows in proportion to `α`.
-- Output `.npz` and trajectory files are ignored by git; see `.gitignore`.
 
 ## License
 
@@ -258,4 +281,26 @@ including ones that are not themselves openly licensed.
 
 ## Citation
 
-Please cite the paper above if you use this code.
+If you use this code, please cite:
+
+> Zhou, R.; Richardson, J. O. Surface Hopping Dynamics on Adiabatic States
+> Propagated with Real-Time TDDFT. *arXiv* **2026**, arXiv:2610.41686.
+> [https://doi.org/10.48550/arXiv.2610.41686](https://doi.org/10.48550/arXiv.2610.41686)
+
+```bibtex
+@misc{zhou2026surface,
+  author        = {Zhou, Ruiyi and Richardson, Jeremy O.},
+  title         = {Surface Hopping Dynamics on Adiabatic States Propagated with Real-Time TDDFT},
+  year          = {2026},
+  eprint        = {2610.41686},
+  archiveprefix = {arXiv},
+  primaryclass  = {physics.chem-ph},
+  doi           = {10.48550/arXiv.2610.41686},
+  url           = {https://arxiv.org/abs/2610.41686}
+}
+```
+
+## Contact
+
+For questions or issues, please contact **Ruiyi Zhou** at ETH Zurich:
+[ruiyi.zhou@phys.chem.ethz.ch](mailto:ruiyi.zhou@phys.chem.ethz.ch).

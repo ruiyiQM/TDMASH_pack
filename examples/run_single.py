@@ -65,8 +65,8 @@ def run_simulation(atom_string, initial_velocity, initial_spin, output_dir):
     mf2.kernel()
 
     # --- Setup TDRKS Simulations for MASH ---
-    sim1 = TDRKSSimulation(mf1, dt=dt, nuclei_dt=dt, steps=600, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-5, mu=0.5, imaginary_time=True)
-    sim2 = TDRKSSimulation(mf2, dt=dt, nuclei_dt=dt, steps=600, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-5, mu=0.5, imaginary_time=True)
+    sim1 = TDRKSSimulation(mf1, dt=dt, nuclei_dt=dt, steps=600, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-5, mu=0.5, imaginary_time=False, propagation_method='accelerated')
+    sim2 = TDRKSSimulation(mf2, dt=dt, nuclei_dt=dt, steps=600, field_type='none', ehrenfest=False, output_interval=-1, convergence_threshold=1e-5, mu=0.5, imaginary_time=False, propagation_method='accelerated')
 
     # --- Initialize and run the MASH simulation ---
     energy_output_path = os.path.join(output_dir, "mash_output.npz")
