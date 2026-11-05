@@ -20,6 +20,7 @@ simulation_batch_*/
 
 # Keep the sampled initial conditions, which are inputs rather than output
 !initial_conditions/*.npy
+!initial_conditions/*.npz
 !initial_conditions/*.xyz
 
 # OS

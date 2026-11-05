@@ -56,7 +56,7 @@ from tdmash import TDRKSSimulation, MASH, FixedPathDynamics
 src/tdmash/        the importable package
 examples/          runnable input scripts for trans-diimide
 scripts/           utilities for generating initial conditions
-initial_conditions/  the sampled Wigner ensemble used in the paper
+initial_conditions/  initial conditions; ensemble_ic.npz is the set used for the paper's ensemble
 ```
 
 ### Modules
@@ -116,13 +116,29 @@ python examples/run_fixed_path_rks.py
 
 ## Initial conditions
 
-`initial_conditions/` holds the 100-member Wigner ensemble used for the
-published results (coordinates and velocities in atomic units, plus the
-sampled initial spin vectors). To regenerate it:
+`initial_conditions/ensemble_ic.npz` holds the 100 initial conditions that were
+actually used for the ensemble results in the paper (arrays `coords` and `vel`
+of shape `(100, 4, 3)` and `spin` of shape `(100, 3)`; atomic units, in the
+legacy Bloch-vector convention described below). Its SHA-256 checksum is
+`eed733936ff2e73a6088838efe97ab1015f8644eb7529b5880d6adb2dd11d174`. Entry `i`
+(zero-based) corresponds to `structure_{i+1}` of the production runs.
 
-```bash
-python scripts/generate_NHNH_Wigner.py
-```
+The files `wigner_coords_100.npy`, `wigner_velocities_100.npy`,
+`wigner_spin_100.npy` and `wigner_structures_100.xyz` were shipped with
+release `v0.1.0`. Their spin vectors are identical to those in
+`ensemble_ic.npz`, but their coordinates and velocities are a different set of
+samples (largest difference 0.67 bohr in the coordinates), so they do **not**
+reproduce the paper's ensemble. They are kept unchanged for backward
+compatibility. `wigner_spin_100.npy` is an `.npz` container; load it with
+`np.load(..., allow_pickle=False)["spin"]`.
+
+The random seed and the Hessian used to generate the production set were not
+recorded, so `scripts/generate_NHNH_Wigner.py` is a sampling example and is not
+guaranteed to regenerate `ensemble_ic.npz`.
+
+In the legacy Bloch convention used by the stored spins, `z = |c0|^2 - |c1|^2`,
+so `S_z < 0` is the initially excited state (index 1). The convention in the
+paper is `S_z = |c1|^2 - |c0|^2`.
 
 `tdmash.Wigner` implements the nuclear sampling and `tdmash.sampler` the
 Bloch-sphere sampling of the initial mapping variables.
