@@ -210,6 +210,17 @@ CTest covers restricted/unrestricted PT-CN models, fixed- and moving-nucleus pro
 and the timestep, native BOMD and paired timing self-checks. See [tests/README.md](tests/README.md)
 for scope.
 
+The tracked ethylene, CN-reference and Cayley Slurm templates require
+`TDMASH_PYTHON` to name a Python executable available on Euler compute nodes.
+Activate the desired environment on Euler, then export
+`TDMASH_PYTHON="$(command -v python)"` before submitting a template with `sbatch`.
+They use the existing frozen scratch-study layout and checksum manifests;
+preparing and copying that study remains a separate step.
+The result collector uses SSH configuration for authentication. An explicit
+identity can be supplied through `TDMASH_SSH_IDENTITY`; no identity path is
+embedded in the scripts. Historical scratch paths in the scientific replay
+scripts identify archived input data rather than runtime Python environments.
+
 ### Treatment of frustrated hops
 
 `MASH.py` calls `Spin.rescale_momentum_on_hop_v4`, in which a frustrated hop

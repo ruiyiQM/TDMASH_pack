@@ -92,3 +92,12 @@ These are short correctness regressions. Unrestricted moving-nucleus coverage
 is limited to the tested single-state paths. The separate Euler ethylene study
 assesses longer excited-state trajectories and large scaling factors.
 Unrestricted two-state DTO/NAC and hopping remain outside this validation.
+
+The twelve direct CTest workflow scripts also import four helpers:
+`compare_c2h4_prefix.py`, `refine_pt_cn_bomd_reference.py`,
+`validate_pt_cn_theory4.py` and `probe_c2h4_pt_solver.py`.
+Keep all sixteen Python scripts and the three referenced ethylene/CN/Cayley
+Slurm templates in a frozen checkout. The Slurm templates require an exported
+`TDMASH_PYTHON`; remote collection uses SSH configuration or
+`TDMASH_SSH_IDENTITY`. Collector self-checks mock SSH and cover both identity
+selection paths without contacting Euler.

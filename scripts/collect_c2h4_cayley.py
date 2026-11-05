@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -10,8 +11,10 @@ import tempfile
 import time
 
 HOST = 'zhourui@euler.ethz.ch'
-OPTIONS = ['-i', '/Users/ruiyi/.ssh/id_ed25519_euler', '-o', 'BatchMode=yes',
+OPTIONS = ['-o', 'BatchMode=yes',
            '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=20']
+if os.environ.get('TDMASH_SSH_IDENTITY'):
+    OPTIONS[:0] = ['-i', os.environ['TDMASH_SSH_IDENTITY']]
 REMOTE = """
 from pathlib import Path
 import hashlib,json,subprocess,sys
@@ -119,6 +122,27 @@ def collect(root, job, output, wait=False):
 
 
 def self_check():
+    import runpy
+    from unittest.mock import patch
+
+    scripts = Path(__file__).resolve().parent
+    for name in ('euler_c2h4_cayley.sbatch', 'euler_c2h4_ehrenfest.sbatch',
+                 'euler_c2h4_cn_reference.sbatch'):
+        assert (scripts / name).is_file(), 'Missing frozen Slurm template: ' + name
+
+    for identity in ('', '/tmp/test identity'):
+        with patch.dict(os.environ, {'TDMASH_SSH_IDENTITY': identity}):
+            settings = runpy.run_path(__file__)
+        reply = subprocess.CompletedProcess([], 0, stdout='{"status":"RUNNING","files":{}}')
+        with patch.object(subprocess, 'run', return_value=reply) as ssh:
+            assert not settings['collect'](
+                '/cluster/scratch/zhourui/tdmash_validation/c2h4_cayley_independent_test',
+                '1', Path('/tmp'))
+        command = ssh.call_args.args[0]
+        assert ('-i' in command) == bool(identity)
+        if identity:
+            assert command[command.index('-i') + 1] == identity
+
     summary = dict(protocol=dict(resumes_paused_goal=False, alpha=1., duration_au=1200.), records=[],
                    response=dict(dscf=dict(max_growth_rate=.05)),
                    largest_tested_completed_dt={state: dict(accelerated=2., pt_cn=15.) for state in ('ground', 'dscf')},
